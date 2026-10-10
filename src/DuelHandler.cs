@@ -359,8 +359,9 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Attempts to trigger the active skill in duel.
-        /// Checks EmotionalCommand.directSkillButton, SkillActivation, and Engine state.
+        /// Attempts to trigger or activate the active character skill in duel.
+        /// If SkillDialogViewController is already open on screen, confirms/activates the skill immediately.
+        /// Otherwise opens the skill dialog via EmotionalCommand / DuelHUD nearSkillIcon / SkillActivation / Engine.
         /// </summary>
         public static void TriggerSkill()
         {
@@ -372,21 +373,66 @@ namespace DuelLinksAccess
                     return;
                 }
 
+                // 1. If SkillDialogViewController is ALREADY open, pressing K activates and confirms it!
+                var allSkillVcs = UnityEngine.Object.FindObjectsOfType<Il2CppYgomGame.Duel.SkillDialogViewController>();
+                if (allSkillVcs != null && allSkillVcs.Length > 0)
+                {
+                    for (int i = 0; i < allSkillVcs.Length; i++)
+                    {
+                        var svc = allSkillVcs[i];
+                        if (svc != null && svc.gameObject != null && svc.gameObject.activeInHierarchy)
+                        {
+                            DebugLogger.Log(LogCategory.Game, "DuelSkill", "SkillDialog is open, activating skill via svc.Activate()");
+                            svc.Activate();
+                            ScreenReader.Say(Loc.Get("duel_skill_activating", "正在发动技能..."));
+                            return;
+                        }
+                    }
+                }
+
+                // 2. Turn gate check with descriptive speech
+                int myPlayer = DuelState.MyPlayerNum();
+                int turnPlayer = DuelState.CurrentTurnPlayer;
+                if (turnPlayer != myPlayer)
+                {
+                    DebugLogger.Log(LogCategory.Game, "DuelSkill", $"Not my turn (turnPlayer={turnPlayer}, myPlayer={myPlayer})");
+                    ScreenReader.Say(Loc.Get("duel_skill_not_your_turn", "当前是对手回合，无法发动技能"));
+                    return;
+                }
+
                 bool triggered = false;
 
-                // 1. Try EmotionalCommand (standard in-duel HUD command bar)
-                var allEm = UnityEngine.Object.FindObjectsOfType<Il2CppYgomGame.Duel.EmotionalCommand>(includeInactive: true);
-                if (allEm != null && allEm.Length > 0)
+                // 3. Try EmotionalCommand (standard in-duel HUD command bar singleton)
+                var em = Il2CppYgomGame.Duel.EmotionalCommand.Instance;
+                if (em == null)
                 {
-                    for (int i = 0; i < allEm.Length; i++)
-                    {
-                        var em = allEm[i];
-                        if (em == null) continue;
+                    var allEm = UnityEngine.Object.FindObjectsOfType<Il2CppYgomGame.Duel.EmotionalCommand>(includeInactive: true);
+                    if (allEm != null && allEm.Length > 0) em = allEm[0];
+                }
 
+                if (em != null)
+                {
+                    DebugLogger.Log(LogCategory.Game, "DuelSkill", $"Found EmotionalCommand, hasEx={em.hasEx}");
+                    if (em.hasEx)
+                    {
+                        try
+                        {
+                            DebugLogger.Log(LogCategory.Game, "DuelSkill", "Calling em.OnExSkill()");
+                            em.OnExSkill();
+                            triggered = true;
+                        }
+                        catch (System.Exception ex)
+                        {
+                            DebugLogger.Log(LogCategory.Game, "DuelSkill", $"em.OnExSkill error: {ex.Message}");
+                        }
+                    }
+
+                    if (!triggered)
+                    {
                         // Check directSkillButton
                         GameObject skillBtnGo = null;
                         try { skillBtnGo = em.directSkillButton; } catch { }
-                        if (skillBtnGo != null && skillBtnGo.activeInHierarchy)
+                        if (skillBtnGo != null)
                         {
                             var uBtn = skillBtnGo.GetComponent<UnityEngine.UI.Button>();
                             if (uBtn != null && uBtn.interactable && uBtn.onClick != null)
@@ -394,38 +440,82 @@ namespace DuelLinksAccess
                                 DebugLogger.Log(LogCategory.Game, "DuelSkill", "Invoking directSkillButton onClick");
                                 uBtn.onClick.Invoke();
                                 triggered = true;
-                                break;
                             }
-
-                            DebugLogger.Log(LogCategory.Game, "DuelSkill", "Calling em.OnSkill()");
-                            em.OnSkill();
-                            triggered = true;
-                            break;
                         }
 
-                        // Check directExSkillButton (e.g. Turbo Duel / Raid events)
-                        GameObject exBtnGo = null;
-                        try { exBtnGo = em.directExSkillButton; } catch { }
-                        if (exBtnGo != null && exBtnGo.activeInHierarchy)
+                        if (!triggered)
                         {
-                            var uBtn = exBtnGo.GetComponent<UnityEngine.UI.Button>();
-                            if (uBtn != null && uBtn.interactable && uBtn.onClick != null)
+                            try
                             {
-                                DebugLogger.Log(LogCategory.Game, "DuelSkill", "Invoking directExSkillButton onClick");
-                                uBtn.onClick.Invoke();
+                                DebugLogger.Log(LogCategory.Game, "DuelSkill", "Calling em.OnSkill()");
+                                em.OnSkill();
                                 triggered = true;
-                                break;
                             }
-
-                            DebugLogger.Log(LogCategory.Game, "DuelSkill", "Calling em.OnExSkill()");
-                            em.OnExSkill();
-                            triggered = true;
-                            break;
+                            catch (System.Exception ex)
+                            {
+                                DebugLogger.Log(LogCategory.Game, "DuelSkill", $"em.OnSkill error: {ex.Message}");
+                            }
                         }
                     }
                 }
 
-                // 2. Try SkillActivation component (stand-alone activation HUD)
+                // 4. Try DuelHUD nearSkillIcon and skillActivation
+                if (!triggered)
+                {
+                    var duelClient = Il2CppYgomGame.Duel.DuelClient.instance;
+                    var hud = duelClient != null ? duelClient.duelHUD : null;
+                    if (hud == null)
+                    {
+                        var allHud = UnityEngine.Object.FindObjectsOfType<Il2CppYgomGame.Duel.DuelHUD>();
+                        if (allHud != null && allHud.Length > 0) hud = allHud[0];
+                    }
+
+                    if (hud != null)
+                    {
+                        // Check nearSkillIcon
+                        var icon = hud.nearSkillIcon;
+                        if (icon != null && icon.gameObject != null && icon.gameObject.activeInHierarchy)
+                        {
+                            var btn = icon.GetComponent<UnityEngine.UI.Button>()
+                                ?? icon.GetComponentInParent<UnityEngine.UI.Button>()
+                                ?? icon.GetComponentInChildren<UnityEngine.UI.Button>();
+                            if (btn != null && btn.interactable && btn.onClick != null)
+                            {
+                                DebugLogger.Log(LogCategory.Game, "DuelSkill", "Invoking nearSkillIcon Button onClick");
+                                btn.onClick.Invoke();
+                                triggered = true;
+                            }
+                            else
+                            {
+                                var rect = icon.GetComponent<UnityEngine.RectTransform>();
+                                if (rect != null)
+                                {
+                                    UnityEngine.Vector3[] corners = new UnityEngine.Vector3[4];
+                                    rect.GetWorldCorners(corners);
+                                    UnityEngine.Vector3 worldCenter = (corners[0] + corners[2]) * 0.5f;
+                                    var screenPos = new UnityEngine.Vector2(worldCenter.x, worldCenter.y);
+                                    bool clicked = Main.ClickViaHardwareMouse(screenPos, "nearSkillIcon");
+                                    DebugLogger.Log(LogCategory.Game, "DuelSkill", $"Hardware click nearSkillIcon pos={screenPos} sent={clicked}");
+                                    if (clicked) triggered = true;
+                                }
+                            }
+                        }
+
+                        // Check skillActivation
+                        if (!triggered && hud.skillActivation != null)
+                        {
+                            var sa = hud.skillActivation;
+                            if (sa.gameObject != null && sa.gameObject.activeInHierarchy)
+                            {
+                                DebugLogger.Log(LogCategory.Game, "DuelSkill", "Invoking hud.skillActivation.OnClicked()");
+                                sa.OnClicked();
+                                triggered = true;
+                            }
+                        }
+                    }
+                }
+
+                // 5. Try SkillActivation component standalone
                 if (!triggered)
                 {
                     var skillActs = UnityEngine.Object.FindObjectsOfType<Il2CppYgomGame.Duel.SkillActivation>(includeInactive: true);
@@ -436,41 +526,65 @@ namespace DuelLinksAccess
                             var sa = skillActs[i];
                             if (sa == null || sa.gameObject == null || !sa.gameObject.activeInHierarchy) continue;
 
-                            bool isShowing = false;
-                            try { isShowing = sa.isShowing; } catch { }
-
                             var btn = sa.activateButton;
                             bool btnReady = btn != null && btn.interactable && btn.gameObject.activeInHierarchy;
-
-                            if (isShowing || btnReady)
+                            if (btnReady && btn.onClick != null)
                             {
-                                DebugLogger.Log(LogCategory.Game, "DuelSkill", "Invoking SkillActivation button/click");
-                                if (btnReady && btn.onClick != null)
-                                    btn.onClick.Invoke();
-                                else
-                                    sa.OnClicked();
-
+                                DebugLogger.Log(LogCategory.Game, "DuelSkill", "Invoking SkillActivation button");
+                                btn.onClick.Invoke();
                                 triggered = true;
                                 break;
                             }
+
+                            DebugLogger.Log(LogCategory.Game, "DuelSkill", "Calling sa.OnClicked()");
+                            sa.OnClicked();
+                            triggered = true;
+                            break;
                         }
                     }
                 }
 
-                // 3. Fallback: check if Engine reports activatable
+                // 6. Try opening SkillDialogViewController directly
+                if (!triggered)
+                {
+                    try
+                    {
+                        DebugLogger.Log(LogCategory.Game, "DuelSkill", "Calling SkillDialogViewController.Open(true, ...)");
+                        Il2CppYgomGame.Duel.SkillDialogViewController.Open(true, null, null);
+                        triggered = true;
+                    }
+                    catch (System.Exception ex)
+                    {
+                        DebugLogger.Log(LogCategory.Game, "DuelSkill", $"SkillDialogViewController.Open error: {ex.Message}");
+                    }
+                }
+
+                // 7. Engine direct fallback
                 if (!triggered)
                 {
                     try
                     {
                         int p = DuelState.MyPlayerNum();
-                        if (Il2CppYgomGame.Duel.Engine.DLL_DuelSkillIsActivatable(p) != 0)
+                        int act = Il2CppYgomGame.Duel.Engine.DLL_DuelSkillIsActivatable(p);
+                        int actEx = 0;
+                        try { actEx = Il2CppYgomGame.Duel.Engine.DLL_DuelSkillIsActivatableEx(p); } catch { }
+
+                        DebugLogger.Log(LogCategory.Game, "DuelSkill", $"Engine DLL_DuelSkillIsActivatable={act}, actEx={actEx}");
+                        if (act != 0)
                         {
-                            DebugLogger.Log(LogCategory.Game, "DuelSkill", "Engine DLL_DuelSkillIsActivatable is 1, calling DLL_DuelSkillActivate");
                             Il2CppYgomGame.Duel.Engine.DLL_DuelSkillActivate(p);
                             triggered = true;
                         }
+                        else if (actEx != 0)
+                        {
+                            Il2CppYgomGame.Duel.Engine.DLL_DuelSkillActivateEx(p);
+                            triggered = true;
+                        }
                     }
-                    catch { }
+                    catch (System.Exception ex)
+                    {
+                        DebugLogger.Log(LogCategory.Game, "DuelSkill", $"Engine activation error: {ex.Message}");
+                    }
                 }
 
                 if (triggered)

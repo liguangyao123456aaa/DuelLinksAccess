@@ -303,17 +303,11 @@ namespace DuelLinksAccess
         {
             try
             {
-                bool voiceData = Il2CppYgomGame.Settings.SettingsUtil.GetVoiceData();
                 bool voiceMute = Il2CppYgomGame.Settings.SettingsUtil.GetVoiceMute();
                 int voiceVol = Il2CppYgomGame.Settings.SettingsUtil.GetVoiceVolume();
                 bool talk = Il2CppYgomGame.Settings.SettingsUtil.GetTalk();
-                string voiceValid = Il2CppYgomSystem.Sound.VoiceValid;
 
-                string msg = $"语音包状态诊断：语音数据已下载: {(voiceData ? "是" : "否")}；" +
-                             $"对战台词开关: {(talk ? "开启" : "已关闭")}；" +
-                             $"语音静音: {(voiceMute ? "已静音" : "未静音")}；" +
-                             $"语音音量: {voiceVol}；" +
-                             $"声效有效标识: {voiceValid}";
+                string msg = $"语音状态：{(voiceMute ? "已静音" : "正常")}，对战台词{(talk ? "开启" : "已关闭")}，音量 {voiceVol}%。";
                 MelonLogger.Msg($"[VoiceDiagnostic] {msg}");
                 ScreenReader.Say(msg);
             }

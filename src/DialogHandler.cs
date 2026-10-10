@@ -96,6 +96,7 @@ namespace DuelLinksAccess
             public string Label;
             public ItemType Type;
             public Slider SliderComponent; // non-null for sliders
+            public Action CustomAction;
         }
 
         #endregion
@@ -241,6 +242,9 @@ namespace DuelLinksAccess
                 }
             }
 
+            // Real-time monitor for SettingsDialogViewController voice mute & talk toggle
+            MonitorSettingsDialogLiveState();
+
             ProcessInput();
         }
 
@@ -330,6 +334,9 @@ namespace DuelLinksAccess
 
                 // Settings dialog (Talk in duel toggle, voice volume, voice mute, voice data)
                 ApplySettingsDialogLabels(dialogRoot);
+
+                // Skill confirmation dialog in duel (Activate / Cancel buttons and description)
+                ApplySkillDialogLabels(dialogRoot);
 
                 // If top VC has nothing (empty overlay like TutorialArrowPart),
                 // dismiss it or pass through so other handlers can run
@@ -1536,6 +1543,132 @@ namespace DuelLinksAccess
             }
         }
 
+        private bool _lastSettingsVoiceMute;
+        private bool _lastSettingsTalk;
+        private bool _settingsStateInitialized;
+
+        private void MonitorSettingsDialogLiveState()
+        {
+            if (_dialogRoot == null) return;
+            var vc = _dialogRoot.GetComponent<Il2CppYgomGame.Settings.SettingsDialogViewController>();
+            if (vc == null)
+            {
+                _settingsStateInitialized = false;
+                return;
+            }
+
+            try
+            {
+                bool currentMute = Il2CppYgomGame.Settings.SettingsUtil.GetVoiceMute();
+                bool currentTalk = vc.talkToggle != null ? vc.talkToggle.isOn : Il2CppYgomGame.Settings.SettingsUtil.GetTalk();
+
+                if (!_settingsStateInitialized)
+                {
+                    _lastSettingsVoiceMute = currentMute;
+                    _lastSettingsTalk = currentTalk;
+                    _settingsStateInitialized = true;
+                    return;
+                }
+
+                if (currentMute != _lastSettingsVoiceMute)
+                {
+                    _lastSettingsVoiceMute = currentMute;
+                    ApplySettingsDialogLabels(_dialogRoot);
+                    string status = Loc.Get("settings_voice_mute", currentMute ? "已静音" : "正常");
+                    MelonLogger.Msg($"[Dialog] Settings voice mute live change: {status}");
+                    ScreenReader.Say(status);
+                }
+
+                if (currentTalk != _lastSettingsTalk)
+                {
+                    _lastSettingsTalk = currentTalk;
+                    ApplySettingsDialogLabels(_dialogRoot);
+                    string status = Loc.Get(currentTalk ? "accessory_checked" : "accessory_unchecked");
+                    string msg = Loc.Get("settings_talk_toggle", status);
+                    MelonLogger.Msg($"[Dialog] Settings talk toggle live change: {msg}");
+                    ScreenReader.Say(msg);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Reads and labels SkillDialogViewController in duel (skill confirmation modal).
+        /// Announces skill name, description, and provides activate/cancel buttons.
+        /// </summary>
+        private void ApplySkillDialogLabels(GameObject dialogRoot)
+        {
+            try
+            {
+                var vc = dialogRoot.GetComponent<Il2CppYgomGame.Duel.SkillDialogViewController>()
+                    ?? FindVcInStack<Il2CppYgomGame.Duel.SkillDialogViewController>("dialog");
+                if (vc == null) return;
+
+                string sName = "";
+                string sText = "";
+                try { sName = LabelExtractor.StripRichText(vc.skillName?.text ?? "").Trim(); } catch { }
+                try { sText = LabelExtractor.StripRichText(vc.skillText?.text ?? "").Trim(); } catch { }
+
+                bool foundActivate = false;
+                bool foundClose = false;
+
+                for (int i = 0; i < _items.Count; i++)
+                {
+                    var it = _items[i];
+                    string goName = it.Go != null ? it.Go.name.ToLower() : "";
+                    if (goName.Contains("act") || goName.Contains("ok") || goName.Contains("decide") || goName.Contains("skill"))
+                    {
+                        it.Label = Loc.Get("duel_skill_btn_activate");
+                        var origAction = it.CustomAction;
+                        it.CustomAction = () => {
+                            if (origAction != null) origAction();
+                            else vc.Activate();
+                        };
+                        foundActivate = true;
+                    }
+                    else if (goName.Contains("close") || goName.Contains("cancel") || goName.Contains("back"))
+                    {
+                        it.Label = Loc.Get("duel_skill_btn_close");
+                        var origAction = it.CustomAction;
+                        it.CustomAction = () => {
+                            if (origAction != null) origAction();
+                            else vc.Close();
+                        };
+                        foundClose = true;
+                    }
+                }
+
+                if (!foundActivate)
+                {
+                    _items.Insert(0, new DialogItem
+                    {
+                        Label = Loc.Get("duel_skill_btn_activate"),
+                        CustomAction = () => vc.Activate()
+                    });
+                }
+                if (!foundClose)
+                {
+                    _items.Add(new DialogItem
+                    {
+                        Label = Loc.Get("duel_skill_btn_close"),
+                        CustomAction = () => vc.Close()
+                    });
+                }
+
+                string prompt = string.IsNullOrEmpty(sName)
+                    ? "技能确认。按回车或K发动，按Escape取消。"
+                    : $"技能：{sName}。{sText}。按回车或K发动，按Escape取消。";
+
+                _lastDialogText = prompt;
+                ScreenReader.Say(prompt);
+                DebugLogger.Log(LogCategory.Handler, "Dialog", $"SkillDialog labels applied: {sName}");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ApplySkillDialogLabels error: {ex.Message}");
+            }
+        }
+
         private void RelabelItemByTransform(Transform target, string newLabel)
         {
             if (target == null || string.IsNullOrEmpty(newLabel)) return;
@@ -2031,6 +2164,21 @@ namespace DuelLinksAccess
 
             var item = _items[_focusIndex];
 
+            if (item.CustomAction != null)
+            {
+                try
+                {
+                    item.CustomAction();
+                    ScreenReader.Say(item.Label);
+                    _postActivationRescanDelay = 1.0f;
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Msg($"[Dialog] CustomAction error: {ex.Message}");
+                }
+            }
+
             if (!LabelExtractor.IsAlive(item.Go))
             {
                 ScreenReader.Say(Loc.Get("dialog_click_error"));
@@ -2196,6 +2344,12 @@ namespace DuelLinksAccess
                 }
 
                 ScreenReader.Say(item.Label);
+
+                // If in Settings dialog, immediately re-apply labels so state updates without re-entering
+                if (_dialogRoot != null && _dialogRoot.GetComponent<Il2CppYgomGame.Settings.SettingsDialogViewController>() != null)
+                {
+                    ApplySettingsDialogLabels(_dialogRoot);
+                }
 
                 // Schedule a post-activation rescan to detect stacked dialogs
                 // (e.g. clicking "Privacy Notice" opens a new dialog on top)

@@ -472,6 +472,10 @@ namespace DuelLinksAccess
             _english["duel_skill_not_available"] = "当前不可发动技能或未满足条件";
             _english["duel_skill_not_in_duel"] = "当前不在决斗中";
             _english["duel_skill_error"] = "技能操作失败";
+            _english["duel_skill_not_your_turn"] = "当前是对手回合，无法发动技能";
+            _english["duel_skill_activating"] = "正在发动技能...";
+            _english["duel_skill_btn_activate"] = "发动技能";
+            _english["duel_skill_btn_close"] = "取消";
 
             // ===== DECK EDITOR =====
             _english["deck_edit_entered"] = "卡组编辑器。主卡组 {0} 张，额外卡组 {1} 张，卡片收藏库 {2} 张。按 Tab 键切换主卡组、额外卡组、收藏与操作菜单。快捷键：B 自动构筑，A 配件设置，K 技能，Ctrl+S 保存。";
@@ -653,10 +657,6 @@ namespace DuelLinksAccess
             _english["ticket_nothing_to_exchange"] = "尚未选择卡片，无法确认兑换。请先选择卡片。";
 
             // ===== DOWNLOAD & VOICE SETTINGS =====
-            _english["download_start"] = "开始下载（{0}）";
-            _english["download_cancel"] = "取消下载";
-            _english["download_card_data"] = "卡片高清数据：{0}";
-            _english["download_bg_data"] = "后台静默下载：{0}";
             _english["download_voice_setting"] = "语音设置：{0}{1}（按回车更改）";
             _english["download_voice_off"] = "语音设置：已关闭（按回车开启）";
             _english["download_voice_select_prompt"] = "打开语音语言选择列表";
