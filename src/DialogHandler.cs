@@ -2499,6 +2499,11 @@ namespace DuelLinksAccess
                     {
                         MelonLogger.Msg($"[Dialog] ConfirmDialog: affirmative action recognized for '{item.Label}', calling OnClickedYes()");
                         confirmVc.OnClickedYes();
+                        var btn = item.Go?.GetComponent<Button>();
+                        if (btn != null && btn.interactable)
+                        {
+                            try { btn.onClick?.Invoke(); } catch { }
+                        }
                         ScreenReader.Say(item.Label);
                         return true;
                     }

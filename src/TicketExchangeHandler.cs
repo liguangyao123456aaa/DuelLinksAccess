@@ -451,12 +451,36 @@ namespace DuelLinksAccess
                 // exchange later rejects and the game hard-resets to title.
                 var car = new CardAndRarity(mrk, kirarity);
 
-                // Check if addible
+                // 1. If not addible, check if it's because this card is already selected (toggle deselect)
+                // or because reward slot is already full (clear previous selection to replace)
+                if (!_vc.isAddible(car))
+                {
+                    bool removed = false;
+                    try { removed = _vc.delFromRewardView(car); } catch { }
+                    if (removed)
+                    {
+                        try { _vc.setDecideButton(); } catch { }
+                        try { _vc.updateRewardView(); } catch { }
+                        ScreenReader.Say(Loc.Get("ticket_deselected", name));
+                        _operationCooldown = OperationCooldownTime;
+                        return;
+                    }
+
+                    // Slot may be full with another card — clear previous selection to replace
+                    try { _vc.ClearClicked(); } catch { }
+                }
+
+                // 2. Add card to reward view
                 if (_vc.isAddible(car))
                 {
                     bool result = _vc.addToRewardView(car);
                     if (result)
                     {
+                        // Explicitly update decide button and reward view so the game
+                        // updates decideButton.interactable = true!
+                        try { _vc.setDecideButton(); } catch { }
+                        try { _vc.updateRewardView(); } catch { }
+
                         ScreenReader.Say(Loc.Get("ticket_selected", name));
                         DebugLogger.Log(LogCategory.Handler, "TicketExchange",
                             $"Selected card mrk={mrk} kirarity={kirarity} ({name})");
@@ -487,19 +511,30 @@ namespace DuelLinksAccess
 
             try
             {
-                // The CardGetter has two possible confirm controls. The ticket /
-                // dream-ticket / choice flow confirms through decideButton (driven
-                // by the game's setDecideButton()); card-trader-style modes use
-                // exchangeButton. Whichever the active mode uses, its interactable
-                // flag is the game's own "a valid selection can be submitted now"
-                // gate. Never bypass it: DecideClicked() with an empty or already-
-                // consumed selection hard-errors the game to the title screen.
+                // Synchronize decideButton state before evaluating
+                try { _vc?.setDecideButton(); } catch { }
+
                 var decideBtn = _vc?.decideButton;
                 var exchangeBtn = _vc?.exchangeButton;
 
+                bool decideActive = decideBtn != null && (decideBtn.gameObject?.activeInHierarchy ?? true);
+                bool exchangeActive = exchangeBtn != null && (exchangeBtn.gameObject?.activeInHierarchy ?? true);
+
+                bool decideInteractable = decideActive && decideBtn.interactable;
+                bool exchangeInteractable = exchangeActive && exchangeBtn.interactable;
+
+                // Also inspect if selList or rewardView actually has selected cards
+                bool hasSelectedCards = false;
+                try
+                {
+                    if (_vc?.selList != null && _vc.selList.Count > 0)
+                        hasSelectedCards = true;
+                }
+                catch { }
+
                 var action = TicketExchangePolicy.ChooseAction(
-                    decideBtn != null, decideBtn?.interactable == true,
-                    exchangeBtn != null, exchangeBtn?.interactable == true);
+                    decideActive, decideInteractable || (decideActive && hasSelectedCards),
+                    exchangeActive, exchangeInteractable);
 
                 switch (action)
                 {
@@ -521,10 +556,10 @@ namespace DuelLinksAccess
 
                     default: // Reject
                         DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                            $"Confirm rejected: decide(present={decideBtn != null}, " +
-                            $"interactable={decideBtn?.interactable == true}) " +
-                            $"exchange(present={exchangeBtn != null}, " +
-                            $"interactable={exchangeBtn?.interactable == true})");
+                            $"Confirm rejected: decide(present={decideActive}, " +
+                            $"interactable={decideInteractable}, hasCards={hasSelectedCards}) " +
+                            $"exchange(present={exchangeActive}, " +
+                            $"interactable={exchangeInteractable})");
                         ScreenReader.Say(Loc.Get("ticket_nothing_to_exchange"));
                         break;
                 }
