@@ -12,7 +12,7 @@ failed = 0
 
 if os.path.exists(mods_dir):
     for f in os.listdir(mods_dir):
-        if f.endswith(".old") or f.endswith(".bak"):
+        if f.endswith(".old") or f.endswith(".bak") or f.endswith(".old_locked"):
             fp = os.path.join(mods_dir, f)
             try:
                 os.remove(fp)
