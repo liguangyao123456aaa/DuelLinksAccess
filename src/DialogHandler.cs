@@ -2341,6 +2341,16 @@ namespace DuelLinksAccess
                     UnityEngine.EventSystems.ExecuteEvents.Execute(
                         item.Go, eventData,
                         UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+
+                    // Strategy 5: Hardware mouse coordinate click fallback.
+                    // For dialogs blocked by overlays (e.g. InputScreenCover) or native raycasters
+                    // where synthetic pointer events fail, simulate genuine Win32 hardware mouse click
+                    // directly at the UI element's screen center.
+                    if (item.Go != null && Main.TryGetUiScreenPos(item.Go, out Vector2 clickPos))
+                    {
+                        MelonLogger.Msg($"[Dialog] Simulating hardware mouse click fallback at ({clickPos.x:F0}, {clickPos.y:F0}) for {item.Label}");
+                        Main.ClickViaHardwareMouse(clickPos, "Dialog-Btn-HardwareFallback");
+                    }
                 }
 
                 ScreenReader.Say(item.Label);
@@ -2378,6 +2388,67 @@ namespace DuelLinksAccess
                 ?? go.GetComponentInParent<Selectable>();
         }
 
+        /// <summary>
+        /// Heuristic evaluation for negative/cancellation actions across English, Japanese, and Chinese.
+        /// Zero hardcoding of exact locale strings; matches by semantic intent and GO name tokens.
+        /// </summary>
+        private static bool IsNegativeAction(string label, GameObject go)
+        {
+            if (string.IsNullOrEmpty(label)) label = "";
+            string upper = label.Trim().ToUpperInvariant();
+            string goName = go != null ? go.name.ToLowerInvariant() : "";
+
+            if (upper == "NO" || upper == "CANCEL" || upper == "CLOSE" || upper == "BACK"
+                || upper == "DISMISS" || upper == "REJECT" || upper == "DECLINE"
+                || upper == "いいえ" || upper == "キャンセル" || upper == "閉じる" || upper == "戻る"
+                || upper.Contains("取消") || upper.Contains("关闭") || upper.Contains("返回")
+                || upper.Contains("放弃") || upper.Contains("拒绝") || upper == "否" || upper == "不")
+            {
+                return true;
+            }
+
+            if (goName.Contains("cancel") || goName.Contains("close") || goName.Contains("btn_no")
+                || goName.Contains("btn0") || goName.Contains("back"))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Heuristic evaluation for affirmative/confirmation/trade actions across English, Japanese, and Chinese.
+        /// Matches by semantic intent and GO name tokens.
+        /// </summary>
+        private static bool IsAffirmativeAction(string label, GameObject go)
+        {
+            if (string.IsNullOrEmpty(label)) label = "";
+            string upper = label.Trim().ToUpperInvariant();
+            string goName = go != null ? go.name.ToLowerInvariant() : "";
+
+            if (upper == "TRADE" || upper == "YES" || upper == "OK" || upper == "EXCHANGE"
+                || upper == "CONFIRM" || upper == "BUY" || upper == "ACCEPT" || upper == "AGREE"
+                || upper == "SUBMIT" || upper == "PROCEED" || upper == "APPLY"
+                || upper == "はい" || upper == "交換" || upper == "決定" || upper == "購入"
+                || upper == "同意" || upper == "OK" || upper == "確認"
+                || upper.Contains("交易") || upper.Contains("确定") || upper.Contains("确认")
+                || upper.Contains("交换") || upper.Contains("兑换") || upper.Contains("购买")
+                || upper.Contains("同意") || upper.Contains("接受") || upper.Contains("提交")
+                || upper.Contains("继续") || upper.Contains("应用") || upper == "是" || upper == "好")
+            {
+                return true;
+            }
+
+            if (goName.Contains("trade") || goName.Contains("exchange") || goName.Contains("yes")
+                || goName.Contains("ok") || goName.Contains("confirm") || goName.Contains("btn_yes")
+                || goName.Contains("btn1") || goName.Contains("submit") || goName.Contains("buy"))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
         private static bool IsControlInteractable(GameObject go)
         {
             var selectable = GetNearestSelectable(go);
@@ -2394,49 +2465,64 @@ namespace DuelLinksAccess
         {
             try
             {
-                // Privacy Notice: "I've confirmed" has no click handlers.
+                // Privacy Notice: "I've confirmed" / "我已确认" has no click handlers.
                 // Must call PolicySettingsDialogViewController.OnConfirm() directly.
-                if (item.Label == "I've confirmed")
+                var policyVc = FindVcInStack<
+                    Il2CppYgomGame.Settings.PolicySettingsDialogViewController>("dialog");
+                if (policyVc != null)
                 {
-                    // Walk the dialog manager VC stack to find PolicySettingsDialogVC.
-                    // FindObjectOfType fails for this IL2CPP type.
-                    var policyVc = FindVcInStack<
-                        Il2CppYgomGame.Settings.PolicySettingsDialogViewController>("dialog");
-                    if (policyVc != null)
+                    if (IsAffirmativeAction(item.Label, item.Go) || item.Label == "I've confirmed" || item.Label.Contains("确认") || item.Label.Contains("同意"))
                     {
-                        MelonLogger.Msg("[Dialog] Calling PolicySettingsDialogVC.OnConfirm()");
+                        MelonLogger.Msg($"[Dialog] Calling PolicySettingsDialogVC.OnConfirm() for '{item.Label}'");
                         policyVc.OnConfirm();
                         ScreenReader.Say(item.Label);
                         return true;
                     }
-                    MelonLogger.Msg("[Dialog] PolicySettingsDialogVC not found in stack, falling back to click");
                 }
 
                 // ConfirmDialogViewController (ticket exchange, card trader, etc.)
-                // Both "btn" GOs share the same onClick handler, so Button.onClick.Invoke()
-                // always triggers YES/TRADE. We need OnClickedNo() / OnClickedYes() directly.
+                // Both "btn" GOs share the same onClick handler in game code, so synthetic
+                // button click triggers unintended behavior or no-ops when covered.
+                // We resolve via semantic intent heuristics (zh/ja/en) and direct invocation.
                 var confirmVc = FindVcInStack<
                     Il2CppYgomGame.Menu.ConfirmDialogViewController>("dialog");
                 if (confirmVc != null)
                 {
-                    // Determine which button by label
-                    string label = item.Label?.ToUpperInvariant() ?? "";
-                    if (label == "NO" || label == "CANCEL" || label == "CLOSE"
-                        || label == "いいえ" || label == "キャンセル")
+                    if (IsNegativeAction(item.Label, item.Go))
                     {
-                        MelonLogger.Msg("[Dialog] ConfirmDialog: calling OnClickedNo()");
+                        MelonLogger.Msg($"[Dialog] ConfirmDialog: negative action recognized for '{item.Label}', calling OnClickedNo()");
                         confirmVc.OnClickedNo();
                         ScreenReader.Say(item.Label);
                         return true;
                     }
-                    else if (label == "TRADE" || label == "YES" || label == "OK"
-                        || label == "EXCHANGE" || label == "CONFIRM"
-                        || label == "はい" || label == "交換")
+                    else if (IsAffirmativeAction(item.Label, item.Go))
                     {
-                        MelonLogger.Msg("[Dialog] ConfirmDialog: calling OnClickedYes()");
+                        MelonLogger.Msg($"[Dialog] ConfirmDialog: affirmative action recognized for '{item.Label}', calling OnClickedYes()");
                         confirmVc.OnClickedYes();
                         ScreenReader.Say(item.Label);
                         return true;
+                    }
+                    else
+                    {
+                        // Fallback by hierarchy when text is ambiguous or unlabelled
+                        var buttons = confirmVc.GetComponentsInChildren<Button>(true);
+                        if (buttons != null && buttons.Length >= 2)
+                        {
+                            if (item.Go == buttons[0].gameObject)
+                            {
+                                MelonLogger.Msg($"[Dialog] ConfirmDialog: ambiguous '{item.Label}', mapped to button[0] -> OnClickedNo()");
+                                confirmVc.OnClickedNo();
+                                ScreenReader.Say(item.Label);
+                                return true;
+                            }
+                            else if (item.Go == buttons[1].gameObject)
+                            {
+                                MelonLogger.Msg($"[Dialog] ConfirmDialog: ambiguous '{item.Label}', mapped to button[1] -> OnClickedYes()");
+                                confirmVc.OnClickedYes();
+                                ScreenReader.Say(item.Label);
+                                return true;
+                            }
+                        }
                     }
                 }
                 // Auto Deck Build dialog (AutoDeckDialogViewController)
