@@ -322,6 +322,15 @@ namespace DuelLinksAccess
                 // controls from the VC's own live data
                 ApplyAutoDeckLabels(dialogRoot);
 
+                // Deck menu dialog (Draw test, history, popular, foil, etc.)
+                ApplyDeckMenuLabels(dialogRoot);
+
+                // Download settings dialog (card data, background dl, size, etc.)
+                ApplyDownloadSettingsLabels(dialogRoot);
+
+                // Settings dialog (Talk in duel toggle, voice volume, voice mute, voice data)
+                ApplySettingsDialogLabels(dialogRoot);
+
                 // If top VC has nothing (empty overlay like TutorialArrowPart),
                 // dismiss it or pass through so other handlers can run
                 if (_items.Count == 0 && string.IsNullOrEmpty(dialogText))
@@ -371,7 +380,7 @@ namespace DuelLinksAccess
                 // If dialog has tabs, announce the active tab name
                 string activeTabName = GetActiveTabName(dialogRoot);
                 if (activeTabName != null)
-                    ScreenReader.SayQueued(activeTabName + " tab");
+                    ScreenReader.SayQueued(activeTabName + " 标签页");
 
                 // Debug: dump non-button text elements and datapaths to discover
                 // category headers and mission data structure
@@ -742,12 +751,14 @@ namespace DuelLinksAccess
                     // Skip slider sub-elements (already handled as Slider)
                     if (IsChildOfSlider(go, root)) continue;
 
+                    var selectable = go.GetComponent<Selectable>();
+                    if (selectable is UnityEngine.UI.Scrollbar || goName.Contains("scrollbar")) continue;
+
                     // Must look like a button — has a Selectable, or has "btn"/"button" in name,
                     // or is an Image with text children
                     bool isButton = false;
                     string label = null;
 
-                    var selectable = go.GetComponent<Selectable>();
                     bool nameLooksInteractive = goName.Contains("btn")
                         || goName.Contains("button")
                         || goName.Contains("close")
@@ -768,7 +779,7 @@ namespace DuelLinksAccess
                     if (isButton) label = LabelExtractor.GetLabel(go);
 
                     if (!isButton) continue;
-                    if (string.IsNullOrEmpty(label)) label = go.name;
+                    if (string.IsNullOrEmpty(label)) label = LabelExtractor.CleanGoName(go.name);
 
                     processed.Add(go);
 
@@ -778,7 +789,7 @@ namespace DuelLinksAccess
                         if (IsTabButton(go))
                         {
                             var sel = go.GetComponent<Selectable>();
-                            label += (sel != null && !sel.interactable) ? ", selected tab" : ", tab";
+                            label += (sel != null && !sel.interactable) ? "，已选标签页" : "，标签页";
                         }
                     }
                     catch { }
@@ -1367,6 +1378,175 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Deck menu dialog (DeckMenuDialogViewController): labels the 8 main actions
+        /// (Draw Test, History, Deep Link, Distribute recipes, Contribute recipes,
+        /// Popular cards, Popular skills, Select Foil / SelKira).
+        /// </summary>
+        private void ApplyDeckMenuLabels(GameObject dialogRoot)
+        {
+            try
+            {
+                var vc = dialogRoot.GetComponent<Il2CppYgomGame.Deck.DeckMenuDialogViewController>();
+                if (vc == null) return;
+
+                RelabelItemByTransform(vc.drawTestButton?.transform, Loc.Get("deck_menu_draw_test"));
+                RelabelItemByTransform(vc.deepLinkButton?.transform, Loc.Get("deck_menu_deep_link"));
+                RelabelItemByTransform(vc.distributeButton?.transform, Loc.Get("deck_menu_distribute"));
+                RelabelItemByTransform(vc.contributeButton?.transform, Loc.Get("deck_menu_contribute"));
+                RelabelItemByTransform(vc.popularCardButton?.transform, Loc.Get("deck_menu_popular_card"));
+                RelabelItemByTransform(vc.popularSkillButton?.transform, Loc.Get("deck_menu_popular_skill"));
+
+                // History toggle
+                if (vc.historyButton != null)
+                {
+                    string histLabel = Loc.Get("deck_menu_history");
+                    string v = vc.historyViewLabel?.text;
+                    if (!string.IsNullOrWhiteSpace(v))
+                        histLabel += $" ({LabelExtractor.StripRichText(v).Trim()})";
+                    RelabelItemByTransform(vc.historyButton.transform, histLabel);
+                }
+
+                // Foil / SelKira button
+                if (vc.selKiraButton != null)
+                {
+                    string curKira = LabelExtractor.StripRichText(vc.selKiraCurrent?.text ?? "").Trim();
+                    if (string.IsNullOrWhiteSpace(curKira)) curKira = "普通";
+                    RelabelItemByTransform(vc.selKiraButton.transform, Loc.Get("deck_menu_sel_kira", curKira));
+                }
+
+                DebugLogger.Log(LogCategory.Handler, "Dialog", "DeckMenu labels applied");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ApplyDeckMenuLabels error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Download settings dialog (DownloadSettingsDialogViewController): labels
+        /// the download button (with estimated payload size), cancel button,
+        /// card artwork download toggle, and background download toggle.
+        /// </summary>
+        private void ApplyDownloadSettingsLabels(GameObject dialogRoot)
+        {
+            try
+            {
+                var vc = dialogRoot.GetComponent<Il2CppYgomGame.Settings.DownloadSettingsDialogViewController>();
+                if (vc == null) return;
+
+                // Download Button (with size if available)
+                string size = LabelExtractor.StripRichText(vc.cardSizeText?.text ?? vc.voiceSizeText?.text ?? "").Trim();
+                string dlLabel = string.IsNullOrWhiteSpace(size)
+                    ? Loc.Get("download_start", "计算中...")
+                    : Loc.Get("download_start", size);
+                RelabelItemByTransform(vc.downloadButton?.transform, dlLabel);
+
+                // Cancel Button
+                RelabelItemByTransform(vc.cancelButton?.transform, Loc.Get("download_cancel"));
+
+                // Card data checkbox
+                if (vc.cardCheckBox != null)
+                {
+                    bool on = vc.cardCheckBox.isOn;
+                    string status = Loc.Get(on ? "accessory_checked" : "accessory_unchecked");
+                    RelabelItemByTransform(vc.cardCheckBox.transform, Loc.Get("download_card_data", status));
+                }
+
+                // Background download checkbox
+                if (vc.bgdlCheckBox != null)
+                {
+                    bool on = vc.bgdlCheckBox.isOn;
+                    string status = Loc.Get(on ? "accessory_checked" : "accessory_unchecked");
+                    RelabelItemByTransform(vc.bgdlCheckBox.transform, Loc.Get("download_bg_data", status));
+                }
+
+                // Voice setting / language field
+                if (vc.voiceField != null)
+                {
+                    string voiceLang = LabelExtractor.StripRichText(vc.voiceText?.text ?? "").Trim();
+                    string voiceSize = LabelExtractor.StripRichText(vc.voiceSizeText?.text ?? "").Trim();
+                    string vLabel;
+                    if (vc.voiceOff || string.Equals(voiceLang, "OFF", StringComparison.OrdinalIgnoreCase))
+                    {
+                        vLabel = Loc.Get("download_voice_off");
+                    }
+                    else
+                    {
+                        string sizePart = !string.IsNullOrWhiteSpace(voiceSize) ? $"（需下载: {voiceSize}）" : "";
+                        vLabel = Loc.Get("download_voice_setting", voiceLang, sizePart);
+                    }
+                    RelabelItemByTransform(vc.voiceField.transform, vLabel);
+                }
+
+                DebugLogger.Log(LogCategory.Handler, "Dialog", "DownloadSettings labels applied");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ApplyDownloadSettingsLabels error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// General settings dialog (SettingsDialogViewController): labels
+        /// duel talk toggle (character voice lines during battle), voice volume slider,
+        /// voice mute button, and voice data download jump button.
+        /// </summary>
+        private void ApplySettingsDialogLabels(GameObject dialogRoot)
+        {
+            try
+            {
+                var vc = dialogRoot.GetComponent<Il2CppYgomGame.Settings.SettingsDialogViewController>();
+                if (vc == null) return;
+
+                if (vc.talkToggle != null)
+                {
+                    bool on = vc.talkToggle.isOn;
+                    string status = Loc.Get(on ? "accessory_checked" : "accessory_unchecked");
+                    RelabelItemByTransform(vc.talkToggle.transform, Loc.Get("settings_talk_toggle", status));
+                }
+
+                if (vc.voiceSlider != null)
+                {
+                    int val = (int)(vc.voiceSlider.value * 100);
+                    RelabelItemByTransform(vc.voiceSlider.transform, Loc.Get("settings_voice_slider", val));
+                }
+
+                if (vc.voiceButton != null)
+                {
+                    bool isMute = Il2CppYgomGame.Settings.SettingsUtil.GetVoiceMute();
+                    RelabelItemByTransform(vc.voiceButton.transform, Loc.Get("settings_voice_mute", isMute ? "已静音" : "正常"));
+                }
+
+                if (vc.voiceDataButton != null)
+                {
+                    RelabelItemByTransform(vc.voiceDataButton.transform, Loc.Get("settings_voice_data_btn"));
+                }
+
+                if (vc.voiceField != null)
+                {
+                    string vText = LabelExtractor.StripRichText(vc.voiceText?.text ?? "").Trim();
+                    RelabelItemByTransform(vc.voiceField.transform, Loc.Get("settings_voice_lang", vText));
+                }
+
+                DebugLogger.Log(LogCategory.Handler, "Dialog", "SettingsDialog labels applied");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ApplySettingsDialogLabels error: {ex.Message}");
+            }
+        }
+
+        private void RelabelItemByTransform(Transform target, string newLabel)
+        {
+            if (target == null || string.IsNullOrEmpty(newLabel)) return;
+            var item = _items.Find(it => it.Go != null && IsSameOrRelated(it.Go.transform, target));
+            if (item != null)
+            {
+                item.Label = newLabel;
+            }
+        }
+
+        /// <summary>
         /// Resolves an accessory id to a label, wrapping it in the given
         /// category prefix (e.g. "Card sleeve: {0}") only when name
         /// resolution fell back to the raw id — resolved names already
@@ -1500,8 +1680,10 @@ namespace DuelLinksAccess
 
                     // This is the non-interactable (selected) tab
                     string label = item.Label;
-                    // Strip the ", selected tab" suffix we may have added
-                    if (label.EndsWith(", selected tab"))
+                    // Strip the ", selected tab" or "，已选标签页" suffix we may have added
+                    if (label.EndsWith("，已选标签页"))
+                        label = label.Substring(0, label.Length - "，已选标签页".Length);
+                    else if (label.EndsWith(", selected tab"))
                         label = label.Substring(0, label.Length - ", selected tab".Length);
                     return label;
                 }
@@ -1785,7 +1967,7 @@ namespace DuelLinksAccess
             string msg;
             if (item.Type == ItemType.Header)
             {
-                msg = $"{item.Label} heading, {pos} of {total}";
+                msg = $"{item.Label} 标题，第 {pos} 项，共 {total} 项";
             }
             else if (item.Type == ItemType.Slider && item.SliderComponent != null)
             {
@@ -1810,20 +1992,37 @@ namespace DuelLinksAccess
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
 
             var item = _items[_focusIndex];
-            if (item.Type != ItemType.Slider || item.SliderComponent == null)
+            if (item.Type == ItemType.Slider && item.SliderComponent != null)
+            {
+                var slider = item.SliderComponent;
+                float step = slider.wholeNumbers ? 1f : (slider.maxValue - slider.minValue) / 20f;
+                float newValue = Mathf.Clamp(
+                    slider.value + direction * step,
+                    slider.minValue,
+                    slider.maxValue);
+
+                slider.value = newValue;
+
+                int val = Mathf.RoundToInt(newValue);
+                ScreenReader.Say(val.ToString());
                 return;
+            }
 
-            var slider = item.SliderComponent;
-            float step = slider.wholeNumbers ? 1f : (slider.maxValue - slider.minValue) / 20f;
-            float newValue = Mathf.Clamp(
-                slider.value + direction * step,
-                slider.minValue,
-                slider.maxValue);
-
-            slider.value = newValue;
-
-            int val = Mathf.RoundToInt(newValue);
-            ScreenReader.Say(val.ToString());
+            // Also support adjusting target deck size in AutoDeckDialog
+            try
+            {
+                var topRoot = GetTopVcRoot("dialog");
+                var autoVc = topRoot?.GetComponent<Il2CppYgomGame.Deck.AutoDeckDialogViewController>();
+                if (autoVc != null && IsSameOrRelated(item.Go?.transform, autoVc.deckNumText?.transform))
+                {
+                    int nextNum = Mathf.Clamp(autoVc.curDeckNum + direction, autoVc.deckNumMin, autoVc.deckNumMax);
+                    autoVc.setDeckNum(nextNum);
+                    item.Label = Loc.Get("deck_auto_size", nextNum.ToString(), autoVc.deckNumMin, autoVc.deckNumMax);
+                    ScreenReader.Say(item.Label);
+                    return;
+                }
+            }
+            catch { }
         }
 
         private void ActivateCurrentItem()
@@ -2083,6 +2282,186 @@ namespace DuelLinksAccess
                         MelonLogger.Msg("[Dialog] ConfirmDialog: calling OnClickedYes()");
                         confirmVc.OnClickedYes();
                         ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                }
+                // Auto Deck Build dialog (AutoDeckDialogViewController)
+                var autoVc = FindVcInStack<Il2CppYgomGame.Deck.AutoDeckDialogViewController>("dialog");
+                if (autoVc != null)
+                {
+                    var tf = item.Go?.transform;
+                    if (IsSameOrRelated(tf, autoVc.allButton?.transform))
+                    {
+                        autoVc.allButton.isOn = true;
+                        autoVc.setDefaultAllOrRest();
+                        ApplyAutoDeckLabels(autoVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, autoVc.restButton?.transform))
+                    {
+                        autoVc.restButton.isOn = true;
+                        autoVc.setDefaultAllOrRest();
+                        ApplyAutoDeckLabels(autoVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, autoVc.noCardButton?.transform))
+                    {
+                        autoVc.noCardButton.isOn = !autoVc.noCardButton.isOn;
+                        ApplyAutoDeckLabels(autoVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, autoVc.skillButton?.transform))
+                    {
+                        autoVc.skillButton.isOn = !autoVc.skillButton.isOn;
+                        ApplyAutoDeckLabels(autoVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, autoVc.accordionTitle?.transform) || IsSameOrRelated(tf, autoVc.accButtonImage?.transform))
+                    {
+                        autoVc.AccClicked();
+                        ScreenReader.Say(autoVc.accOpened ? Loc.Get("deck_auto_expanded", Loc.Get("deck_auto_advanced")) : Loc.Get("deck_auto_collapsed", Loc.Get("deck_auto_advanced")));
+                        _scanned = false;
+                        _scanDelay = 0.25f;
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, autoVc.deckNumText?.transform))
+                    {
+                        autoVc.DeckNumClicked();
+                        _scanned = false;
+                        _scanDelay = 0.3f;
+                        return true;
+                    }
+                }
+
+                // Deck Menu dialog (DeckMenuDialogViewController)
+                var deckMenuVc = FindVcInStack<Il2CppYgomGame.Deck.DeckMenuDialogViewController>("dialog");
+                if (deckMenuVc != null)
+                {
+                    var tf = item.Go?.transform;
+                    if (IsSameOrRelated(tf, deckMenuVc.drawTestButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_draw_test"));
+                        deckMenuVc.DrawTestClicked();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.historyButton?.transform))
+                    {
+                        bool nextState = !deckMenuVc.historyCurrent;
+                        deckMenuVc.HistoryViewClicked(nextState);
+                        ApplyDeckMenuLabels(deckMenuVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.deepLinkButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_deep_link"));
+                        deckMenuVc.DeepLinkClicked();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.distributeButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_distribute"));
+                        deckMenuVc.DistributeClicked();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.contributeButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_contribute"));
+                        deckMenuVc.ContributeClicked();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.popularCardButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_popular_card"));
+                        deckMenuVc.PopularCardClicked();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.popularSkillButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_popular_skill"));
+                        deckMenuVc.PopularSkillClicked();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, deckMenuVc.selKiraButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("deck_menu_sel_kira", ""));
+                        deckMenuVc.SelKiraClicked();
+                        return true;
+                    }
+                }
+
+                // Download Settings dialog (DownloadSettingsDialogViewController)
+                var dlVc = FindVcInStack<Il2CppYgomGame.Settings.DownloadSettingsDialogViewController>("dialog");
+                if (dlVc != null)
+                {
+                    var tf = item.Go?.transform;
+                    if (IsSameOrRelated(tf, dlVc.downloadButton?.transform))
+                    {
+                        ScreenReader.Say("开始下载");
+                        dlVc.OnOkButton();
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, dlVc.cancelButton?.transform))
+                    {
+                        ScreenReader.Say("已取消下载");
+                        dlVc.OnBack(item.Go);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, dlVc.cardCheckBox?.transform))
+                    {
+                        bool next = !dlVc.cardCheckBox.isOn;
+                        dlVc.cardCheckBox.isOn = next;
+                        dlVc.OnChangedCardCheck(next);
+                        ApplyDownloadSettingsLabels(dlVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, dlVc.bgdlCheckBox?.transform))
+                    {
+                        bool next = !dlVc.bgdlCheckBox.isOn;
+                        dlVc.bgdlCheckBox.isOn = next;
+                        dlVc.OnChangedBgdlCheck(next);
+                        ApplyDownloadSettingsLabels(dlVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, dlVc.voiceField?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("download_voice_select_prompt"));
+                        dlVc.OnVoice();
+                        return true;
+                    }
+                }
+
+                // General settings dialog (SettingsDialogViewController)
+                var setVc = FindVcInStack<Il2CppYgomGame.Settings.SettingsDialogViewController>("dialog");
+                if (setVc != null)
+                {
+                    var tf = item.Go?.transform;
+                    if (IsSameOrRelated(tf, setVc.talkToggle?.transform))
+                    {
+                        bool next = !setVc.talkToggle.isOn;
+                        setVc.talkToggle.isOn = next;
+                        setVc.OnChangeTalkValue(setVc.talkToggle);
+                        ApplySettingsDialogLabels(setVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, setVc.voiceButton?.transform))
+                    {
+                        setVc.OnVoiceMute();
+                        ApplySettingsDialogLabels(setVc.gameObject);
+                        ScreenReader.Say(item.Label);
+                        return true;
+                    }
+                    if (IsSameOrRelated(tf, setVc.voiceDataButton?.transform))
+                    {
+                        ScreenReader.Say(Loc.Get("settings_voice_data_btn"));
+                        setVc.OnVoiceData();
                         return true;
                     }
                 }

@@ -43,6 +43,7 @@ namespace DuelLinksAccess
         /// Toggle with F12.
         /// </summary>
         public static bool DebugMode = false;
+        private bool _voiceChecked = false;
 
         // Handlers — one per feature/screen
         private DialogHandler _dialogHandler;
@@ -139,6 +140,12 @@ namespace DuelLinksAccess
             // Wait for game to be ready before handler updates
             if (!CheckGameReady()) return;
 
+            if (!_voiceChecked)
+            {
+                _voiceChecked = true;
+                CheckVoiceStatusStartup();
+            }
+
             // Poll current screen — detects changes and fires events
             GameStateTracker.Update();
 
@@ -210,6 +217,13 @@ namespace DuelLinksAccess
                 return true;
             }
 
+            // F4 = Voice diagnostic (check voice pack download & duel dialogue settings)
+            if (InputManager.TryConsumeKeyDown(KeyCode.F4))
+            {
+                AnnounceVoiceStatus();
+                return true;
+            }
+
             // F2 = Dump current state (debug)
             if (DebugMode && InputManager.TryConsumeKeyDown(KeyCode.F2))
             {
@@ -266,6 +280,48 @@ namespace DuelLinksAccess
             }
 
             return false;
+        }
+
+        private void CheckVoiceStatusStartup()
+        {
+            try
+            {
+                bool voiceData = Il2CppYgomGame.Settings.SettingsUtil.GetVoiceData();
+                bool voiceMute = Il2CppYgomGame.Settings.SettingsUtil.GetVoiceMute();
+                int voiceVol = Il2CppYgomGame.Settings.SettingsUtil.GetVoiceVolume();
+                bool talk = Il2CppYgomGame.Settings.SettingsUtil.GetTalk();
+                string voiceValid = Il2CppYgomSystem.Sound.VoiceValid;
+                MelonLogger.Msg($"[VoiceDiagnostic] Startup check: VoiceData={voiceData}, VoiceMute={voiceMute}, VoiceVol={voiceVol}, Talk={talk}, VoiceValid='{voiceValid}'");
+            }
+            catch (System.Exception ex)
+            {
+                MelonLogger.Msg($"[VoiceDiagnostic] Startup check error: {ex.Message}");
+            }
+        }
+
+        private void AnnounceVoiceStatus()
+        {
+            try
+            {
+                bool voiceData = Il2CppYgomGame.Settings.SettingsUtil.GetVoiceData();
+                bool voiceMute = Il2CppYgomGame.Settings.SettingsUtil.GetVoiceMute();
+                int voiceVol = Il2CppYgomGame.Settings.SettingsUtil.GetVoiceVolume();
+                bool talk = Il2CppYgomGame.Settings.SettingsUtil.GetTalk();
+                string voiceValid = Il2CppYgomSystem.Sound.VoiceValid;
+
+                string msg = $"语音包状态诊断：语音数据已下载: {(voiceData ? "是" : "否")}；" +
+                             $"对战台词开关: {(talk ? "开启" : "已关闭")}；" +
+                             $"语音静音: {(voiceMute ? "已静音" : "未静音")}；" +
+                             $"语音音量: {voiceVol}；" +
+                             $"声效有效标识: {voiceValid}";
+                MelonLogger.Msg($"[VoiceDiagnostic] {msg}");
+                ScreenReader.Say(msg);
+            }
+            catch (System.Exception ex)
+            {
+                MelonLogger.Msg($"[VoiceDiagnostic] Announce error: {ex.Message}");
+                ScreenReader.Say($"语音诊断失败: {ex.Message}");
+            }
         }
 
         private static bool IsControlHeld()
@@ -1208,7 +1264,7 @@ namespace DuelLinksAccess
             catch (System.Exception ex)
             {
                 MelonLogger.Msg($"Tutorial dump error: {ex.Message}");
-                ScreenReader.Say("Tutorial dump failed");
+                ScreenReader.Say("教程数据转储失败");
             }
         }
 
@@ -1228,32 +1284,32 @@ namespace DuelLinksAccess
                 MelonLogger.Msg("=== F9: Simulating click at arrow target ===");
 
                 var arrowVc = FindCurrentArrowVc(out string mgrName);
-                if (arrowVc == null) { ScreenReader.Say("No tutorial arrow active"); return; }
+                if (arrowVc == null) { ScreenReader.Say("当前无活动教程箭头"); return; }
 
                 MelonLogger.Msg($"F9: found TutorialArrow in {mgrName} manager");
 
                 var physicTarget = arrowVc.physicTarget;
                 var dispTarget = arrowVc.dispTarget;
                 var clickTarget = physicTarget ?? dispTarget;
-                if (clickTarget == null) { ScreenReader.Say("Arrow has no physics or display target"); return; }
+                if (clickTarget == null) { ScreenReader.Say("箭头无有效目标"); return; }
 
                 var cam = arrowVc.targetCamera;
                 if (cam == null) cam = Camera.main;
-                if (cam == null) { ScreenReader.Say("No camera"); return; }
+                if (cam == null) { ScreenReader.Say("无可用摄像机"); return; }
 
                 Vector3 screenPos = cam.WorldToScreenPoint(clickTarget.transform.position);
                 MelonLogger.Msg($"Target ({(physicTarget != null ? "physicTarget" : "dispTarget")}={clickTarget.name}): " +
                     $"Unity ({screenPos.x:F0}, {screenPos.y:F0}), screen {Screen.width}x{Screen.height}");
 
                 if (ClickViaHardwareMouse(new Vector2(screenPos.x, screenPos.y), "F9"))
-                    ScreenReader.Say("Click simulated");
+                    ScreenReader.Say("模拟点击成功");
                 else
-                    ScreenReader.Say("Hardware click failed");
+                    ScreenReader.Say("硬件模拟点击失败");
             }
             catch (System.Exception ex)
             {
                 MelonLogger.Msg($"SimulateClick error: {ex.Message}");
-                ScreenReader.Say($"Click failed: {ex.Message}");
+                ScreenReader.Say($"点击失败: {ex.Message}");
             }
         }
 
@@ -1370,7 +1426,7 @@ namespace DuelLinksAccess
             catch (System.Exception ex)
             {
                 MelonLogger.Msg($"ActivateTutorialArrowTarget error: {ex.Message}");
-                ScreenReader.Say($"Activation failed: {ex.Message}");
+                ScreenReader.Say($"激活失败: {ex.Message}");
             }
         }
 

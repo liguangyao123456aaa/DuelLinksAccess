@@ -448,6 +448,11 @@ namespace DuelLinksAccess
                 if (isResultScreen)
                     ScanResultScreen(_screenRoot);
 
+                // Sub-screens under deck branch operations
+                ScanSkillSelectScreen(_screenRoot);
+                ScanDrawTestScreen(_screenRoot);
+                ScanDeckRecipeScreen(_screenRoot);
+
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"Found {_items.Count} items");
 
@@ -1612,6 +1617,170 @@ namespace DuelLinksAccess
             }
         }
 
+        /// <summary>
+        /// Skill selection screen (SkillSelectViewController): scans the skill list,
+        /// names each skill with its equipped status and effect description via SkillUtil.
+        /// </summary>
+        private void ScanSkillSelectScreen(GameObject root)
+        {
+            try
+            {
+                var vc = root.GetComponent<Il2CppYgomGame.Deck.SkillSelectViewController>();
+                if (vc == null) return;
+
+                var items = root.GetComponentsInChildren<Il2CppYgomGame.Deck.SkillSelectItem2>(true);
+                if (items == null || items.Length == 0) return;
+
+                foreach (var sItem in items)
+                {
+                    if (sItem == null || sItem.gameObject == null || !sItem.gameObject.activeInHierarchy) continue;
+
+                    int sid = sItem.SkillId;
+                    string name = sItem.skillName?.text;
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        try { name = Il2CppYgomGame.Utility.SkillUtil.GetName(sid); }
+                        catch { }
+                    }
+                    if (string.IsNullOrWhiteSpace(name))
+                        name = $"技能 {sid}";
+
+                    bool isEquipped = sItem.nowInSet != null && sItem.nowInSet.activeInHierarchy;
+                    string desc = null;
+                    try { desc = Il2CppYgomGame.Utility.SkillUtil.GetInfo(sid); }
+                    catch { }
+                    desc = LabelExtractor.StripRichText(desc ?? "").Trim();
+
+                    string fullLabel = Loc.Get(isEquipped ? "skill_equipped" : "skill_unequipped", name);
+                    if (!string.IsNullOrEmpty(desc))
+                        fullLabel += $"。效果：{desc}";
+
+                    var existing = _items.Find(it => it.Go == sItem.gameObject || (it.Go != null && sItem.transform.IsChildOf(it.Go.transform)));
+                    if (existing != null)
+                    {
+                        existing.Label = fullLabel;
+                    }
+                    else
+                    {
+                        _items.Add(new ScreenItem
+                        {
+                            Go = sItem.gameObject,
+                            Label = fullLabel,
+                            Type = ItemType.Button
+                        });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[ScreenBtn] ScanSkillSelectScreen error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Draw test screen (DrawTestViewController): labels the redraw/draw buttons
+        /// and identifies all drawn hand cards by card name via CardUtil.
+        /// </summary>
+        private void ScanDrawTestScreen(GameObject root)
+        {
+            try
+            {
+                var vc = root.GetComponent<Il2CppYgomGame.Deck.DrawTestViewController>();
+                if (vc == null) return;
+
+                // Relabel redraw button
+                if (vc.initButton != null)
+                {
+                    var it = _items.Find(x => x.Go == vc.initButton.gameObject);
+                    if (it != null) it.Label = Loc.Get("draw_test_redraw");
+                }
+
+                // Relabel draw-one-more button
+                if (vc.addButton != null)
+                {
+                    var it = _items.Find(x => x.Go == vc.addButton.gameObject);
+                    if (it != null) it.Label = Loc.Get("draw_test_add_card");
+                }
+
+                // Scan drawn cards in content
+                var cards = root.GetComponentsInChildren<Il2CppYgomGame.Deck.DeckCard>(true);
+                if (cards != null)
+                {
+                    int idx = 1;
+                    foreach (var card in cards)
+                    {
+                        if (card == null || card.gameObject == null || !card.gameObject.activeInHierarchy) continue;
+                        int mrk = card.Mrk;
+                        string cardName = null;
+                        if (mrk > 0)
+                        {
+                            try { cardName = Il2CppYgomGame.Card.Content.Instance?.GetName(mrk); }
+                            catch { }
+                        }
+                        if (string.IsNullOrWhiteSpace(cardName)) cardName = $"未知卡片 ({mrk})";
+
+                        string cardLabel = Loc.Get("draw_test_hand_card", idx++, cardName);
+                        var existing = _items.Find(x => x.Go == card.gameObject);
+                        if (existing != null)
+                        {
+                            existing.Label = cardLabel;
+                        }
+                        else
+                        {
+                            _items.Add(new ScreenItem
+                            {
+                                Go = card.gameObject,
+                                Label = cardLabel,
+                                Type = ItemType.Button
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[ScreenBtn] ScanDrawTestScreen error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Deck recipe screen (DeckRecipeViewController): labels official/player tabs
+        /// and recipe items.
+        /// </summary>
+        private void ScanDeckRecipeScreen(GameObject root)
+        {
+            try
+            {
+                var vc = root.GetComponent<Il2CppYgomGame.Deck.DeckRecipeViewController>();
+                if (vc == null) return;
+
+                if (vc.distributeButton != null)
+                {
+                    var it = _items.Find(x => x.Go == vc.distributeButton.gameObject);
+                    if (it != null)
+                        it.Label = "官方精选配方" + (vc.distributeButton.isOn ? "，已选中" : "，标签页");
+                }
+
+                if (vc.contributeButton != null)
+                {
+                    var it = _items.Find(x => x.Go == vc.contributeButton.gameObject);
+                    if (it != null)
+                        it.Label = "玩家投稿配方" + (vc.contributeButton.isOn ? "，已选中" : "，标签页");
+                }
+
+                if (vc.menuButton != null)
+                {
+                    var it = _items.Find(x => x.Go == vc.menuButton.gameObject);
+                    if (it != null)
+                        it.Label = "筛选与排序菜单" + (vc.menuButton.isOn ? "，已展开" : "，未展开");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[ScreenBtn] ScanDeckRecipeScreen error: {ex.Message}");
+            }
+        }
+
         private void FindButtons(GameObject root)
         {
             try
@@ -1637,6 +1806,10 @@ namespace DuelLinksAccess
                     if (selectable is Slider) continue;
                     if (IsChildOfSlider(go, root)) continue;
 
+                    // Skip scrollbar elements completely (pure noise for screen reader button navigation)
+                    if (selectable is UnityEngine.UI.Scrollbar) continue;
+                    if (IsChildOfScrollbar(go, root)) continue;
+
                     // Skip common layout/background elements
                     string goName = go.name.ToLower();
                     if (IsLayoutElement(goName)) continue;
@@ -1653,7 +1826,7 @@ namespace DuelLinksAccess
                         if (ygomTab == null)
                             ygomTab = go.GetComponentInParent<Il2CppYgomSystem.UI.YgomTabButton>();
                         if (ygomTab != null)
-                            label += ygomTab.isSelected ? ", selected tab" : ", tab";
+                            label += ygomTab.isSelected ? "，已选标签页" : "，标签页";
                     }
                     catch { }
 
@@ -1682,7 +1855,8 @@ namespace DuelLinksAccess
                 || goName == "fillmask" || goName == "handle"
                 || goName == "handleslidearea" || goName == "fillarea"
                 || goName == "slidingarea" || goName == "frame"
-                || goName == "bgcover" || goName == "titleset";
+                || goName == "bgcover" || goName == "titleset"
+                || goName.Contains("scrollbar");
         }
 
         /// <summary>
@@ -1706,6 +1880,24 @@ namespace DuelLinksAccess
                 {
                     if (slider == null) continue;
                     if (go.transform.IsChildOf(slider.transform))
+                        return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private bool IsChildOfScrollbar(GameObject go, GameObject root)
+        {
+            try
+            {
+                var scrollbars = root.GetComponentsInChildren<UnityEngine.UI.Scrollbar>(true);
+                if (scrollbars == null) return false;
+
+                foreach (var sb in scrollbars)
+                {
+                    if (sb == null) continue;
+                    if (go.transform.IsChildOf(sb.transform))
                         return true;
                 }
             }
@@ -2169,6 +2361,34 @@ namespace DuelLinksAccess
                 // Strategy 1: Htjson ButtonWidget — get its YgomButton and fire
                 // the full click cycle so the Htjson dispatch chain fires properly.
                 bool handled = false;
+
+                // Skill selection: SkillSelectItem2
+                var skillItem = item.Go.GetComponent<Il2CppYgomGame.Deck.SkillSelectItem2>()
+                    ?? item.Go.GetComponentInParent<Il2CppYgomGame.Deck.SkillSelectItem2>();
+                if (skillItem != null)
+                {
+                    skillItem.BannerClicked();
+                    ScreenReader.Say($"已选择技能：{item.Label}");
+                    _tabRescanDelay = 0.5f;
+                    handled = true;
+                }
+
+                // Draw test redraw button
+                var drawTestVc = item.Go.GetComponentInParent<Il2CppYgomGame.Deck.DrawTestViewController>();
+                if (drawTestVc != null && item.Go == drawTestVc.initButton?.gameObject)
+                {
+                    drawTestVc.DrawClicked();
+                    ScreenReader.Say("正在重新洗牌并抽取5张手牌...");
+                    _tabRescanDelay = 0.5f;
+                    handled = true;
+                }
+                else if (drawTestVc != null && item.Go == drawTestVc.addButton?.gameObject)
+                {
+                    drawTestVc.AddClicked();
+                    ScreenReader.Say("已抽取1张手牌");
+                    _tabRescanDelay = 0.3f;
+                    handled = true;
+                }
                 var buttonWidget = item.Go.GetComponentInParent<Il2CppYgomSystem.Htjson.ButtonWidget>();
                 if (buttonWidget != null)
                 {

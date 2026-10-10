@@ -24,7 +24,7 @@ namespace DuelLinksAccess
         /// </summary>
         public static string GetLabel(GameObject go)
         {
-            if (go == null) return "Button";
+            if (go == null) return "按钮";
 
             string result;
 
@@ -208,7 +208,7 @@ namespace DuelLinksAccess
         /// </summary>
         public static string CleanGoName(string name)
         {
-            if (string.IsNullOrEmpty(name)) return "Button";
+            if (string.IsNullOrEmpty(name)) return "按钮";
 
             // Remove (Clone) suffix
             if (name.EndsWith("(Clone)"))
@@ -216,7 +216,7 @@ namespace DuelLinksAccess
 
             // Known junk names that should not be announced
             if (_junkNames.Contains(name))
-                return "Button";
+                return "按钮";
 
             // Remove common suffixes to get a meaningful core name
             foreach (var suffix in _nameSuffixes)
@@ -233,7 +233,7 @@ namespace DuelLinksAccess
             name = CamelCaseRegex.Replace(name, " ");
             name = AcronymRegex.Replace(name, " ");
 
-            return name.Trim();
+            return TranslateGoName(name.Trim());
         }
 
         /// <summary>
@@ -308,6 +308,85 @@ namespace DuelLinksAccess
             "vl", "hl", "div", "img"
         };
 
+        private static readonly Dictionary<string, string> _uiTranslations = new(StringComparer.OrdinalIgnoreCase)
+        {
+            { "Back", "返回" },
+            { "Close", "关闭" },
+            { "Next", "下一步" },
+            { "Prev", "上一步" },
+            { "Previous", "上一步" },
+            { "OK", "确定" },
+            { "Cancel", "取消" },
+            { "Confirm", "确认" },
+            { "Button", "按钮" },
+            { "Btn", "按钮" },
+            { "Card Center Banner Mini", "卡片中心精选横幅" },
+            { "Card Center Banner", "卡片中心横幅" },
+            { "Chara Deck", "角色卡组" },
+            { "Deck Select Item", "卡组选择项" },
+            { "Deck Select", "卡组选择" },
+            { "Banner", "活动横幅" },
+            { "Destruction Geas", "冥铭途之祸 (Destruction Geas)" },
+            { "Scrollbar Vertical", "垂直滚动条" },
+            { "Scrollbar Horizontal", "水平滚动条" },
+            { "Scrollbar", "滚动条" },
+            { "Structure", "预组卡组" },
+            { "Deck", "卡组" },
+            { "Chara", "角色" },
+            { "Character", "角色" },
+            { "Filter", "筛选" },
+            { "Sort", "排序" },
+            { "Search", "搜索" },
+            { "Edit", "编辑" },
+            { "Save", "保存" },
+            { "Help", "帮助" },
+            { "Setting", "设置" },
+            { "Settings", "设置" },
+            { "Detail", "详情" },
+            { "Details", "详情" },
+            { "Menu", "菜单" },
+            { "Notice", "公告" },
+            { "Mission", "任务" },
+            { "Present", "礼物" },
+            { "Gift", "礼物" },
+            { "Shop", "商店" },
+            { "Exchange", "交换" },
+            { "Buy", "购买" },
+            { "Purchase", "购买" },
+            { "Item", "道具" },
+            { "Duel", "决斗" },
+            { "Gate", "传送门" },
+            { "Box", "卡盒" },
+            { "Pack", "卡包" },
+            { "Stage", "关卡" },
+            { "World", "世界" },
+            { "Area", "区域" },
+            { "Tab", "标签页" },
+            { "Icon", "图标" },
+            { "Reset", "重置" },
+            { "Select", "选择" }
+        };
+
+        private static string TranslateGoName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return "按钮";
+
+            if (_uiTranslations.TryGetValue(name, out string translated))
+                return translated;
+
+            // Handle trailing numbers, e.g. "Chara Deck0", "Deck Select Item2", "Banner1"
+            var m = Regex.Match(name, @"^(.*?)\s*(\d+)$");
+            if (m.Success)
+            {
+                string stem = m.Groups[1].Value.Trim();
+                string digits = m.Groups[2].Value;
+                if (_uiTranslations.TryGetValue(stem, out string stemTrans))
+                    return $"{stemTrans} {digits}";
+            }
+
+            return name;
+        }
+
         #endregion
 
         #region Extraction Strategies
@@ -350,11 +429,11 @@ namespace DuelLinksAccess
                 catch { }
 
                 if (isLocked)
-                    return name + ", locked";
+                    return name + "，未解锁";
                 else if (isSet)
-                    return isNew ? name + ", currently set, new" : name + ", currently set";
+                    return isNew ? name + "，当前装备，新获得" : name + "，当前装备";
                 else if (isNew)
-                    return name + ", new";
+                    return name + "，新获得";
                 else
                     return name;
             }
@@ -519,7 +598,7 @@ namespace DuelLinksAccess
                     }
 
                     // Numbered fallback
-                    return $"Entry {entryIndex + 1}";
+                    return $"条目 {entryIndex + 1}";
                 }
             }
             catch { }

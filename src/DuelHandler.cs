@@ -65,10 +65,26 @@ namespace DuelLinksAccess
 
         /// <summary>
         /// Whether the duel handler is currently active.
-        /// True when a duel is in progress OR the screen is classified as Duel.
+        /// True when a duel is in progress OR the screen is classified as Duel,
+        /// but NEVER when on non-duel screens (Home, Deck, Shop, etc.).
         /// </summary>
-        public bool IsActive => DuelEventAnnouncer.InDuel
-            || GameStateTracker.CurrentScreen == GameScreen.Duel;
+        public bool IsActive
+        {
+            get
+            {
+                var screen = GameStateTracker.CurrentScreen;
+                if (screen == GameScreen.Home || screen == GameScreen.Deck ||
+                    screen == GameScreen.Shop || screen == GameScreen.Gate ||
+                    screen == GameScreen.Store || screen == GameScreen.Notices ||
+                    screen == GameScreen.Title || screen == GameScreen.DuelTrials ||
+                    screen == GameScreen.CardDetail)
+                {
+                    return false;
+                }
+
+                return DuelEventAnnouncer.InDuel || screen == GameScreen.Duel;
+            }
+        }
 
         #endregion
 
@@ -311,6 +327,13 @@ namespace DuelLinksAccess
                 return;
             }
 
+            // K = Activate Skill (EmotionalCommand / SkillActivation)
+            if (InputManager.TryConsumeKeyDown(KeyCode.K))
+            {
+                TriggerSkill();
+                return;
+            }
+
             // Space (no prompt claimed it above, engine input window CLOSED)
             // = animation/resolution playback is running. Sighted players
             // tap the screen to fast-forward these while the PvP clock
@@ -332,6 +355,137 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Game, "DuelHandler",
                     $"Space animation-skip click sent={sent}");
                 return;
+            }
+        }
+
+        /// <summary>
+        /// Attempts to trigger the active skill in duel.
+        /// Checks EmotionalCommand.directSkillButton, SkillActivation, and Engine state.
+        /// </summary>
+        public static void TriggerSkill()
+        {
+            try
+            {
+                if (!DuelEventAnnouncer.InDuel || DuelEventAnnouncer.DuelEnded)
+                {
+                    ScreenReader.Say(Loc.Get("duel_skill_not_in_duel"));
+                    return;
+                }
+
+                bool triggered = false;
+
+                // 1. Try EmotionalCommand (standard in-duel HUD command bar)
+                var allEm = UnityEngine.Object.FindObjectsOfType<Il2CppYgomGame.Duel.EmotionalCommand>(includeInactive: true);
+                if (allEm != null && allEm.Length > 0)
+                {
+                    for (int i = 0; i < allEm.Length; i++)
+                    {
+                        var em = allEm[i];
+                        if (em == null) continue;
+
+                        // Check directSkillButton
+                        GameObject skillBtnGo = null;
+                        try { skillBtnGo = em.directSkillButton; } catch { }
+                        if (skillBtnGo != null && skillBtnGo.activeInHierarchy)
+                        {
+                            var uBtn = skillBtnGo.GetComponent<UnityEngine.UI.Button>();
+                            if (uBtn != null && uBtn.interactable && uBtn.onClick != null)
+                            {
+                                DebugLogger.Log(LogCategory.Game, "DuelSkill", "Invoking directSkillButton onClick");
+                                uBtn.onClick.Invoke();
+                                triggered = true;
+                                break;
+                            }
+
+                            DebugLogger.Log(LogCategory.Game, "DuelSkill", "Calling em.OnSkill()");
+                            em.OnSkill();
+                            triggered = true;
+                            break;
+                        }
+
+                        // Check directExSkillButton (e.g. Turbo Duel / Raid events)
+                        GameObject exBtnGo = null;
+                        try { exBtnGo = em.directExSkillButton; } catch { }
+                        if (exBtnGo != null && exBtnGo.activeInHierarchy)
+                        {
+                            var uBtn = exBtnGo.GetComponent<UnityEngine.UI.Button>();
+                            if (uBtn != null && uBtn.interactable && uBtn.onClick != null)
+                            {
+                                DebugLogger.Log(LogCategory.Game, "DuelSkill", "Invoking directExSkillButton onClick");
+                                uBtn.onClick.Invoke();
+                                triggered = true;
+                                break;
+                            }
+
+                            DebugLogger.Log(LogCategory.Game, "DuelSkill", "Calling em.OnExSkill()");
+                            em.OnExSkill();
+                            triggered = true;
+                            break;
+                        }
+                    }
+                }
+
+                // 2. Try SkillActivation component (stand-alone activation HUD)
+                if (!triggered)
+                {
+                    var skillActs = UnityEngine.Object.FindObjectsOfType<Il2CppYgomGame.Duel.SkillActivation>(includeInactive: true);
+                    if (skillActs != null && skillActs.Length > 0)
+                    {
+                        for (int i = 0; i < skillActs.Length; i++)
+                        {
+                            var sa = skillActs[i];
+                            if (sa == null || sa.gameObject == null || !sa.gameObject.activeInHierarchy) continue;
+
+                            bool isShowing = false;
+                            try { isShowing = sa.isShowing; } catch { }
+
+                            var btn = sa.activateButton;
+                            bool btnReady = btn != null && btn.interactable && btn.gameObject.activeInHierarchy;
+
+                            if (isShowing || btnReady)
+                            {
+                                DebugLogger.Log(LogCategory.Game, "DuelSkill", "Invoking SkillActivation button/click");
+                                if (btnReady && btn.onClick != null)
+                                    btn.onClick.Invoke();
+                                else
+                                    sa.OnClicked();
+
+                                triggered = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // 3. Fallback: check if Engine reports activatable
+                if (!triggered)
+                {
+                    try
+                    {
+                        int p = DuelState.MyPlayerNum();
+                        if (Il2CppYgomGame.Duel.Engine.DLL_DuelSkillIsActivatable(p) != 0)
+                        {
+                            DebugLogger.Log(LogCategory.Game, "DuelSkill", "Engine DLL_DuelSkillIsActivatable is 1, calling DLL_DuelSkillActivate");
+                            Il2CppYgomGame.Duel.Engine.DLL_DuelSkillActivate(p);
+                            triggered = true;
+                        }
+                    }
+                    catch { }
+                }
+
+                if (triggered)
+                {
+                    ScreenReader.Say(Loc.Get("duel_skill_opening"));
+                }
+                else
+                {
+                    ScreenReader.Say(Loc.Get("duel_skill_not_available"));
+                }
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelSkill", $"TriggerSkill error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("duel_skill_error"));
             }
         }
 
@@ -1083,7 +1237,7 @@ namespace DuelLinksAccess
                     DebugLogger.Log(LogCategory.Game, "DuelResult",
                         "Calling DuelEndMessage.OnNextButton()");
                     _duelEndMessage.OnNextButton();
-                    ScreenReader.Say("OK");
+                    ScreenReader.Say("确定");
                     _duelEndMessage = null;
                 }
                 catch (System.Exception ex)

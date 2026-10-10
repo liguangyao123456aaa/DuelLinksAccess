@@ -318,7 +318,7 @@ namespace DuelLinksAccess
                         $"[FieldNav] Player {player}: {(found.Length > 0 ? found.ToString() : "(none)")}");
                 }
                 MelonLoader.MelonLogger.Msg("[FieldNav] === End dump ===");
-                ScreenReader.Say("Locate counts dumped to log");
+                ScreenReader.Say("位置计数已转储至日志");
             }
             catch (Exception ex)
             {
@@ -391,6 +391,12 @@ namespace DuelLinksAccess
             {
                 if (_isNavigating)
                     ReadCurrentCard(verbose: true);
+                return true;
+            }
+
+            if (InputManager.TryConsumeKeyDown(KeyCode.K))
+            {
+                DuelHandler.TriggerSkill();
                 return true;
             }
 
@@ -687,6 +693,13 @@ namespace DuelLinksAccess
             if (InputManager.TryConsumeKeyDown(KeyCode.P))
             {
                 AdvancePhase();
+                return true;
+            }
+
+            // K: activate skill
+            if (InputManager.TryConsumeKeyDown(KeyCode.K))
+            {
+                DuelHandler.TriggerSkill();
                 return true;
             }
 
@@ -3319,7 +3332,7 @@ namespace DuelLinksAccess
             {
                 DebugLogger.Log(LogCategory.Game, "FieldNav",
                     $"ResolveCard error: {ex.Message}");
-                return $"Card {location}";
+                return $"卡片 {location}";
             }
         }
 
@@ -3346,7 +3359,7 @@ namespace DuelLinksAccess
                     Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardBasicVal(
                         player, zone, slot, ref bv);
                     if (bv.Atk >= 0)
-                        return $"{name}, ATK {bv.Atk}, DEF {bv.Def}";
+                        return $"{name}，攻击力 {bv.Atk}，守备力 {bv.Def}";
                 }
                 catch { }
 
