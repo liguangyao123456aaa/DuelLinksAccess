@@ -1023,36 +1023,52 @@ namespace DuelLinksAccess
         {
             try
             {
-                if (!item.isReady)
-                    return Loc.Get("shop_item_loading");
+                string result = null;
 
                 // ArtItemBox (check before ArtItem — it's a subclass)
                 var artItemBox = item.TryCast<ArtItemBox>();
                 if (artItemBox != null)
-                    return FormatArtItemBoxCompact(artItemBox);
+                    result = FormatArtItemBoxCompact(artItemBox);
+                else
+                {
+                    // ArtItem (card packs)
+                    var artItem = item.TryCast<ArtItem>();
+                    if (artItem != null)
+                        result = FormatArtItemCompact(artItem);
+                    else
+                    {
+                        // BundleLineupItem
+                        var bundleItem = item.TryCast<BundleLineupItem>();
+                        if (bundleItem != null)
+                            result = FormatBundleItemCompact(bundleItem);
+                        else
+                        {
+                            // Trainer2Item
+                            var trainerItem = item.TryCast<Trainer2Item>();
+                            if (trainerItem != null)
+                                result = FormatTrainerItemCompact(trainerItem);
+                            else
+                            {
+                                // StandardItem
+                                var standardItem = item.TryCast<StandardItem>();
+                                if (standardItem != null)
+                                    result = FormatStandardItemCompact(standardItem);
+                                else
+                                    result = ExtractItemTextFallback(item);
+                            }
+                        }
+                    }
+                }
 
-                // ArtItem (card packs)
-                var artItem = item.TryCast<ArtItem>();
-                if (artItem != null)
-                    return FormatArtItemCompact(artItem);
+                // If valid text was extracted, return it immediately!
+                if (!string.IsNullOrEmpty(result) && result != Loc.Get("shop_unknown_item"))
+                    return result;
 
-                // BundleLineupItem
-                var bundleItem = item.TryCast<BundleLineupItem>();
-                if (bundleItem != null)
-                    return FormatBundleItemCompact(bundleItem);
+                // If no meaningful text was found and item is truly not ready, return loading
+                if (!item.isReady)
+                    return Loc.Get("shop_item_loading");
 
-                // Trainer2Item
-                var trainerItem = item.TryCast<Trainer2Item>();
-                if (trainerItem != null)
-                    return FormatTrainerItemCompact(trainerItem);
-
-                // StandardItem
-                var standardItem = item.TryCast<StandardItem>();
-                if (standardItem != null)
-                    return FormatStandardItemCompact(standardItem);
-
-                // Fallback
-                return ExtractItemTextFallback(item);
+                return !string.IsNullOrEmpty(result) ? result : Loc.Get("shop_unknown_item");
             }
             catch (Exception ex)
             {
@@ -1069,30 +1085,45 @@ namespace DuelLinksAccess
         {
             try
             {
-                if (!item.isReady)
-                    return Loc.Get("shop_item_loading");
+                string result = null;
 
                 var artItemBox = item.TryCast<ArtItemBox>();
                 if (artItemBox != null)
-                    return FormatArtItemBoxVerbose(artItemBox);
+                    result = FormatArtItemBoxVerbose(artItemBox);
+                else
+                {
+                    var artItem = item.TryCast<ArtItem>();
+                    if (artItem != null)
+                        result = FormatArtItemVerbose(artItem);
+                    else
+                    {
+                        var bundleItem = item.TryCast<BundleLineupItem>();
+                        if (bundleItem != null)
+                            result = FormatBundleItemVerbose(bundleItem);
+                        else
+                        {
+                            var trainerItem = item.TryCast<Trainer2Item>();
+                            if (trainerItem != null)
+                                result = FormatTrainerItemVerbose(trainerItem);
+                            else
+                            {
+                                var standardItem = item.TryCast<StandardItem>();
+                                if (standardItem != null)
+                                    result = FormatStandardItemVerbose(standardItem);
+                                else
+                                    result = ExtractItemTextFallback(item);
+                            }
+                        }
+                    }
+                }
 
-                var artItem = item.TryCast<ArtItem>();
-                if (artItem != null)
-                    return FormatArtItemVerbose(artItem);
+                if (!string.IsNullOrEmpty(result) && result != Loc.Get("shop_unknown_item"))
+                    return result;
 
-                var bundleItem = item.TryCast<BundleLineupItem>();
-                if (bundleItem != null)
-                    return FormatBundleItemVerbose(bundleItem);
+                if (!item.isReady)
+                    return Loc.Get("shop_item_loading");
 
-                var trainerItem = item.TryCast<Trainer2Item>();
-                if (trainerItem != null)
-                    return FormatTrainerItemVerbose(trainerItem);
-
-                var standardItem = item.TryCast<StandardItem>();
-                if (standardItem != null)
-                    return FormatStandardItemVerbose(standardItem);
-
-                return ExtractItemTextFallback(item);
+                return !string.IsNullOrEmpty(result) ? result : Loc.Get("shop_unknown_item");
             }
             catch (Exception ex)
             {
@@ -1318,11 +1349,59 @@ namespace DuelLinksAccess
 
         #region StandardItem Formatting
 
+        private string GetStandardItemName(StandardItem item)
+        {
+            if (item == null) return null;
+
+            // 1. Try titleLabel Text component
+            string title = SafeReadText(item.titleLabel);
+            if (!string.IsNullOrEmpty(title))
+                return title;
+
+            // 2. Try ItemData dictionary
+            try
+            {
+                var ds = item.ItemData;
+                if (ds != null)
+                {
+                    foreach (var key in new[] { "name", "item_name", "title", "itemName", "nameText", "caption", "item_title", "product_name" })
+                    {
+                        Il2CppSystem.Object val;
+                        if (ds.TryGetValue(key, out val) && val != null)
+                        {
+                            string name = val.ToString();
+                            if (!string.IsNullOrEmpty(name))
+                                return LabelExtractor.StripRichText(name.Trim());
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "Shop",
+                    $"GetStandardItemName ItemData error: {ex.Message}");
+            }
+
+            // 3. Fallback to child texts or label
+            if (item.gameObject != null)
+            {
+                string childText = LabelExtractor.GetChildText(item.gameObject);
+                if (!string.IsNullOrEmpty(childText))
+                    return childText;
+
+                string label = LabelExtractor.GetLabel(item.gameObject);
+                if (!string.IsNullOrEmpty(label) && label != "按钮" && label != "Button")
+                    return label;
+            }
+
+            return null;
+        }
+
         private string FormatStandardItemCompact(StandardItem item)
         {
             var parts = new List<string>();
 
-            string title = SafeReadText(item.titleLabel);
+            string title = GetStandardItemName(item);
             if (!string.IsNullOrEmpty(title))
                 parts.Add(title);
 
@@ -1381,7 +1460,26 @@ namespace DuelLinksAccess
                 if (!string.IsNullOrEmpty(priceTag))
                     return priceTag;
 
-                return GetAllPricesFromGameObject(item.purchaseButton) ?? GetAllPricesFromGameObject(item.gameObject);
+                string btnPrice = GetAllPricesFromGameObject(item.purchaseButton)
+                    ?? GetAllPricesFromGameObject(item.gameObject);
+                if (!string.IsNullOrEmpty(btnPrice))
+                    return btnPrice;
+
+                // Check ItemData dictionary
+                var ds = item.ItemData;
+                if (ds != null)
+                {
+                    foreach (var key in new[] { "price", "price_text", "cost", "gem", "gem_price", "rm_price" })
+                    {
+                        Il2CppSystem.Object val;
+                        if (ds.TryGetValue(key, out val) && val != null)
+                        {
+                            string p = val.ToString();
+                            if (!string.IsNullOrEmpty(p))
+                                return LabelExtractor.StripRichText(p.Trim());
+                        }
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -1555,8 +1653,12 @@ namespace DuelLinksAccess
                 var go = item.gameObject;
                 if (go == null) return Loc.Get("shop_unknown_item");
 
+                string childText = LabelExtractor.GetChildText(go);
+                if (!string.IsNullOrEmpty(childText))
+                    return childText;
+
                 string label = LabelExtractor.GetLabel(go);
-                if (!string.IsNullOrEmpty(label) && label != "Button")
+                if (!string.IsNullOrEmpty(label) && label != "Button" && label != "按钮")
                     return label;
 
                 string childTexts = ExtractChildTexts(go);
