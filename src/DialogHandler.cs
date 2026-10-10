@@ -2492,6 +2492,23 @@ namespace DuelLinksAccess
                     {
                         MelonLogger.Msg($"[Dialog] ConfirmDialog: negative action recognized for '{item.Label}', calling OnClickedNo()");
                         confirmVc.OnClickedNo();
+                        var btn = item.Go?.GetComponent<Button>();
+                        if (btn != null && btn.interactable)
+                        {
+                            try { btn.onClick?.Invoke(); } catch { }
+                        }
+                        try
+                        {
+                            var eventData = new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current);
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(item.Go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(item.Go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(item.Go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                        }
+                        catch { }
+                        if (item.Go != null && Main.TryGetUiScreenPos(item.Go, out Vector2 clickPos))
+                        {
+                            Main.ClickViaHardwareMouse(clickPos, "ConfirmDialog-No-Hardware");
+                        }
                         ScreenReader.Say(item.Label);
                         return true;
                     }
@@ -2503,6 +2520,18 @@ namespace DuelLinksAccess
                         if (btn != null && btn.interactable)
                         {
                             try { btn.onClick?.Invoke(); } catch { }
+                        }
+                        try
+                        {
+                            var eventData = new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current);
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(item.Go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(item.Go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(item.Go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                        }
+                        catch { }
+                        if (item.Go != null && Main.TryGetUiScreenPos(item.Go, out Vector2 clickPos))
+                        {
+                            Main.ClickViaHardwareMouse(clickPos, "ConfirmDialog-Yes-Hardware");
                         }
                         ScreenReader.Say(item.Label);
                         return true;
