@@ -574,23 +574,169 @@ namespace DuelLinksAccess
             }
         }
 
+        /// <summary>
+        /// Dynamically introspects the currency or exchange medium name from the VC hierarchy.
+        /// (Soft-coded: looks for title Text, item paths, or falls back gracefully).
+        /// </summary>
+        public string GetCurrencyName()
+        {
+            if (_vc == null) return "兑换券";
+
+            try
+            {
+                // Check all Text components on _vc to find screen header / title
+                var texts = _vc.GetComponentsInChildren<UnityEngine.UI.Text>(true);
+                if (texts != null)
+                {
+                    foreach (var t in texts)
+                    {
+                        if (t == null) continue;
+                        string txt = t.text?.Trim();
+                        if (string.IsNullOrEmpty(txt)) continue;
+
+                        if (txt.EndsWith("兑换") && txt.Length > 2)
+                        {
+                            return txt.Substring(0, txt.Length - 2);
+                        }
+                        if (txt.Contains("宝珠") || txt.Contains("兑换券") || txt.Contains("水晶") || txt.Contains("金币") || txt.Contains("宝石"))
+                        {
+                            if (!txt.Contains("持有") && !txt.Contains("数量") && txt.Length <= 12)
+                            {
+                                return txt.Replace("兑换", "");
+                            }
+                        }
+                    }
+                }
+
+                // Check needItemPath or mode
+                string path = _vc.needItemPath;
+                if (!string.IsNullOrEmpty(path))
+                {
+                    if (path.IndexOf("jewel", StringComparison.OrdinalIgnoreCase) >= 0 || path.IndexOf("orb", StringComparison.OrdinalIgnoreCase) >= 0)
+                        return "宝珠";
+                    if (path.IndexOf("ticket", StringComparison.OrdinalIgnoreCase) >= 0)
+                        return "兑换券";
+                }
+            }
+            catch { }
+
+            return "兑换券";
+        }
+
+        /// <summary>
+        /// Reads the user's current currency balance on this exchange screen.
+        /// </summary>
+        public string GetCurrencyBalance()
+        {
+            if (_vc == null) return null;
+
+            try
+            {
+                var itemNumText = _vc.itemNum;
+                if (itemNumText != null && !string.IsNullOrEmpty(itemNumText.text?.Trim()))
+                {
+                    return itemNumText.text.Trim();
+                }
+
+                int num = _vc.getItemNum();
+                if (num > 0)
+                {
+                    return num.ToString();
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Reads the price / cost for the currently focused card.
+        /// </summary>
+        public string GetCurrentCardCostText()
+        {
+            if (_vc == null) return null;
+
+            try
+            {
+                // 1. Check choiceView for CardGetterItem at _focusIndex
+                var choiceView = _vc.choiceView;
+                if (choiceView != null)
+                {
+                    var items = choiceView.GetComponentsInChildren<CardGetterItem>(true);
+                    if (items != null && _focusIndex >= 0 && _focusIndex < items.Length)
+                    {
+                        var item = items[_focusIndex];
+                        if (item != null && item.costText != null && !string.IsNullOrEmpty(item.costText.text?.Trim()))
+                        {
+                            string cost = item.costText.text.Trim();
+                            if (cost != "0" && cost != "")
+                            {
+                                return $"价格：{cost} {GetCurrencyName()}";
+                            }
+                        }
+                    }
+                }
+
+                // 2. Check costText on VC
+                var costText = _vc.costText;
+                if (costText != null && !string.IsNullOrEmpty(costText.text?.Trim()))
+                {
+                    string cost = costText.text.Trim();
+                    if (cost != "0" && cost != "")
+                    {
+                        return $"价格：{cost} {GetCurrencyName()}";
+                    }
+                }
+
+                // 3. Check rewardItem
+                var rewardItem = _vc.rewardItem;
+                if (rewardItem != null)
+                {
+                    var rTexts = rewardItem.GetComponentsInChildren<UnityEngine.UI.Text>(true);
+                    if (rTexts != null)
+                    {
+                        foreach (var rt in rTexts)
+                        {
+                            if (rt == null) continue;
+                            string txt = rt.text?.Trim();
+                            if (int.TryParse(txt, out int val) && val > 0)
+                            {
+                                return $"价格：{val} {GetCurrencyName()}";
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // If it's a 1-to-1 ticket exchange mode
+            string curName = GetCurrencyName();
+            if (curName.Contains("券") || curName.Contains("Ticket"))
+            {
+                return $"消耗 1 张 {curName}";
+            }
+
+            return null;
+        }
+
         private void AnnounceExchangeInfo()
         {
             try
             {
+                string curName = GetCurrencyName();
+                string balance = GetCurrencyBalance();
+
+                if (!string.IsNullOrEmpty(balance))
+                {
+                    ScreenReader.Say($"当前持有：{balance} {curName}");
+                    return;
+                }
+
                 // Try to read exchange info text
                 string info = _vc?.cardExchangeInfo;
                 if (!string.IsNullOrEmpty(info))
                 {
                     ScreenReader.Say(info);
-                    return;
-                }
-
-                // Try reading the item number text
-                var itemNumText = _vc?.itemNum;
-                if (itemNumText != null && !string.IsNullOrEmpty(itemNumText.text))
-                {
-                    ScreenReader.Say(Loc.Get("ticket_count", itemNumText.text));
                     return;
                 }
 
@@ -645,7 +791,17 @@ namespace DuelLinksAccess
             int total = _cardIds.Count;
 
             string cardText = verbose ? CardFormatter.FormatVerbose(mrk) : CardFormatter.FormatCompact(mrk);
-            string announcement = Loc.Get("ticket_card_position", pos, total, cardText);
+            string costText = GetCurrentCardCostText();
+
+            string announcement;
+            if (!string.IsNullOrEmpty(costText))
+            {
+                announcement = $"{cardText}，{costText}，第 {pos} 张，共 {total} 张";
+            }
+            else
+            {
+                announcement = Loc.Get("ticket_card_position", pos, total, cardText);
+            }
 
             if (queued)
                 ScreenReader.SayQueued(announcement);

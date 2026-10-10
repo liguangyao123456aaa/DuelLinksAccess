@@ -737,7 +737,8 @@ namespace DuelLinksAccess
                                     if (dict.TryGetValue(key, out val) && val != null)
                                     {
                                         string text = val.ToString();
-                                        if (IsValidLabel(text) && !IsPlaceholderText(text))
+                                        if (IsValidLabel(text) && !IsPlaceholderText(text)
+                                            && !IsGenericBoxCategory(text))
                                         {
                                             DebugLogger.Log(LogCategory.Handler, "LabelEx",
                                                 $"HtjsonNode replaceParam[{key}]=\"{text}\" on {go.name}");
@@ -783,7 +784,7 @@ namespace DuelLinksAccess
                                     string dataPath = dpVal.ToString();
                                     if (!string.IsNullOrEmpty(dataPath))
                                     {
-                                        string found = TryClientWorkName(dataPath, go.name);
+                                        string found = TryClientWorkName(dataPath, go.name, go);
                                         if (found != null) return found;
 
                                         // Fallback: try product path lookup for items with empty titles
@@ -793,7 +794,7 @@ namespace DuelLinksAccess
                                             && dict.TryGetValue("%dataname%", out dnVal) && dnVal != null)
                                         {
                                             string productPath = ppVal.ToString() + "." + dnVal.ToString();
-                                            found = TryClientWorkName(productPath, go.name);
+                                            found = TryClientWorkName(productPath, go.name, go);
                                             if (found != null) return found;
                                         }
                                     }
@@ -932,64 +933,73 @@ namespace DuelLinksAccess
         /// Checks if a string is placeholder text (e.g., Japanese "ああああ" placeholders).
         /// </summary>
         /// <summary>
+        /// Checks if a string represents a generic box or pack category
+        /// rather than a specific box/product title.
+        /// </summary>
+        public static bool IsGenericBoxCategory(string s) => ShopBoxPolicy.IsGenericBoxCategory(s);
+
+        /// <summary>
         /// Tries to resolve a name from ClientWork data store at the given path.
         /// Checks common name keys (title, name, headline, summary).
         /// In debug mode, dumps the full data dictionary for unknown items.
         /// </summary>
-        private static string TryClientWorkName(string dataPath, string goName)
+        private static string TryClientWorkName(string dataPath, string goName, GameObject go = null)
         {
             // Debug: dump keys when in debug mode (helps discover new data fields)
-            if (Main.DebugMode)
+            Il2CppSystem.Collections.Generic.Dictionary<string, Il2CppSystem.Object> dataDict = null;
+            try
+            {
+                var obj = Il2CppYgomSystem.Utility.ClientWork.getByJsonPath(dataPath);
+                if (obj != null)
+                {
+                    dataDict = obj.TryCast<Il2CppSystem.Collections.Generic
+                        .Dictionary<string, Il2CppSystem.Object>>();
+                }
+            }
+            catch { }
+
+            if (Main.DebugMode && dataDict != null)
             {
                 try
                 {
-                    var obj = Il2CppYgomSystem.Utility.ClientWork.getByJsonPath(dataPath);
-                    if (obj != null)
+                    var keyList = new List<string>();
+                    var enumerator = dataDict.GetEnumerator();
+                    while (enumerator.MoveNext())
                     {
-                        var dataDict = obj.TryCast<Il2CppSystem.Collections.Generic
-                            .Dictionary<string, Il2CppSystem.Object>>();
-                        if (dataDict != null)
+                        var entry = enumerator.Current;
+                        string k = entry.Key;
+                        var valObj = entry.Value;
+                        string v = valObj?.ToString() ?? "null";
+
+                        // Recursively dump sub-dictionaries (footer, icon)
+                        if (v.Contains("Dictionary"))
                         {
-                            var keyList = new List<string>();
-                            var enumerator = dataDict.GetEnumerator();
-                            while (enumerator.MoveNext())
+                            try
                             {
-                                var entry = enumerator.Current;
-                                string k = entry.Key;
-                                var valObj = entry.Value;
-                                string v = valObj?.ToString() ?? "null";
-
-                                // Recursively dump sub-dictionaries (footer, icon)
-                                if (v.Contains("Dictionary"))
+                                var subDict = valObj?.TryCast<Il2CppSystem.Collections.Generic
+                                    .Dictionary<string, Il2CppSystem.Object>>();
+                                if (subDict != null)
                                 {
-                                    try
+                                    var subKeys = new List<string>();
+                                    var subEnum = subDict.GetEnumerator();
+                                    while (subEnum.MoveNext())
                                     {
-                                        var subDict = valObj?.TryCast<Il2CppSystem.Collections.Generic
-                                            .Dictionary<string, Il2CppSystem.Object>>();
-                                        if (subDict != null)
-                                        {
-                                            var subKeys = new List<string>();
-                                            var subEnum = subDict.GetEnumerator();
-                                            while (subEnum.MoveNext())
-                                            {
-                                                var se = subEnum.Current;
-                                                string sv = se.Value?.ToString() ?? "null";
-                                                if (sv.Length > 150) sv = sv.Substring(0, 150) + "...";
-                                                subKeys.Add($"{se.Key}={sv}");
-                                            }
-                                            v = "{" + string.Join(", ", subKeys) + "}";
-                                        }
+                                        var se = subEnum.Current;
+                                        string sv = se.Value?.ToString() ?? "null";
+                                        if (sv.Length > 150) sv = sv.Substring(0, 150) + "...";
+                                        subKeys.Add($"{se.Key}={sv}");
                                     }
-                                    catch { }
+                                    v = "{" + string.Join(", ", subKeys) + "}";
                                 }
-
-                                if (v.Length > 200) v = v.Substring(0, 200) + "...";
-                                keyList.Add($"{k}={v}");
                             }
-                            DebugLogger.Log(LogCategory.Handler, "LabelEx",
-                                $"[CW-DUMP] {dataPath}: [{string.Join(", ", keyList)}]");
+                            catch { }
                         }
+
+                        if (v.Length > 200) v = v.Substring(0, 200) + "...";
+                        keyList.Add($"{k}={v}");
                     }
+                    DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                        $"[CW-DUMP] {dataPath}: [{string.Join(", ", keyList)}]");
                 }
                 catch { }
             }
@@ -1025,23 +1035,156 @@ namespace DuelLinksAccess
                 catch { }
             }
 
-            // Primary name: title, name, label, or text. Login-bonus reward cells
-            // store their item name in `text`, so it is included as a fallback.
-            string[] primaryKeys = { "title", "name", "headline", "label", "text" };
+            // Primary name: check title, name, headline, label, text, sub_title, caption, etc.
+            string foundCategory = null;
+            string foundSpecificName = null;
+
             if (!primaryResolved)
-            foreach (var key in primaryKeys)
             {
+                // 1. Check title first to see if it provides a category or name
                 try
                 {
-                    string value = Il2CppYgomSystem.Utility.ClientWork
-                        .getStringByJsonPath(dataPath + "." + key, "");
-                    if (!string.IsNullOrEmpty(value) && !IsPlaceholderText(value))
+                    string tVal = StripRichText(Il2CppYgomSystem.Utility.ClientWork
+                        .getStringByJsonPath(dataPath + ".title", ""));
+                    if (!string.IsNullOrEmpty(tVal) && !IsPlaceholderText(tVal))
                     {
-                        parts.Add(StripRichText(value));
-                        break;
+                        if (IsGenericBoxCategory(tVal))
+                            foundCategory = tVal;
+                        else
+                            foundSpecificName = tVal;
                     }
                 }
                 catch { }
+
+                // 2. Candidate keys for the actual item/box name
+                string[] candidateKeys = {
+                    "name", "headline", "sub_title", "subtitle", "caption",
+                    "box_name", "box_title", "pack_name", "package_name",
+                    "item_name", "product_name", "title", "label", "text"
+                };
+
+                foreach (var key in candidateKeys)
+                {
+                    if (!string.IsNullOrEmpty(foundSpecificName)) break;
+                    if (key == "title" && foundCategory != null) continue;
+
+                    try
+                    {
+                        string val = StripRichText(Il2CppYgomSystem.Utility.ClientWork
+                            .getStringByJsonPath(dataPath + "." + key, ""));
+                        if (!string.IsNullOrEmpty(val) && !IsPlaceholderText(val))
+                        {
+                            if (IsGenericBoxCategory(val))
+                            {
+                                if (string.IsNullOrEmpty(foundCategory))
+                                    foundCategory = val;
+                            }
+                            else if (val != foundCategory)
+                            {
+                                foundSpecificName = val;
+                                break;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                // 3. Fallback: query dataDict keys directly if available
+                if (string.IsNullOrEmpty(foundSpecificName) && dataDict != null)
+                {
+                    try
+                    {
+                        foreach (var key in candidateKeys)
+                        {
+                            Il2CppSystem.Object valObj;
+                            if (dataDict.TryGetValue(key, out valObj) && valObj != null)
+                            {
+                                string s = StripRichText(valObj.ToString());
+                                if (!string.IsNullOrEmpty(s) && !IsPlaceholderText(s) && !IsGenericBoxCategory(s))
+                                {
+                                    foundSpecificName = s;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                // 4. Volume / edition / box number if available
+                string boxNum = null;
+                if (dataDict != null)
+                {
+                    try
+                    {
+                        foreach (var numKey in new[] { "vol", "box_no", "volume", "series_no", "box_num", "pack_id", "edition" })
+                        {
+                            Il2CppSystem.Object numObj;
+                            if (dataDict.TryGetValue(numKey, out numObj) && numObj != null)
+                            {
+                                string nStr = numObj.ToString()?.Trim();
+                                if (!string.IsNullOrEmpty(nStr) && nStr != "0")
+                                {
+                                    boxNum = nStr;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                // 5. Fallback: inspect child Text components of go
+                if (string.IsNullOrEmpty(foundSpecificName) && go != null)
+                {
+                    try
+                    {
+                        var childTexts = go.GetComponentsInChildren<Text>(true);
+                        if (childTexts != null)
+                        {
+                            foreach (var ct in childTexts)
+                            {
+                                if (ct == null) continue;
+                                string txt = StripRichText(ct.text)?.Trim();
+                                if (IsValidLabel(txt) && !IsPlaceholderText(txt) && !IsGenericBoxCategory(txt)
+                                    && txt != "Sale" && txt != "New" && txt != "NEW" && txt != "SALE"
+                                    && !txt.All(char.IsDigit))
+                                {
+                                    foundSpecificName = txt;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                // 6. Combine category and specific name
+                if (!string.IsNullOrEmpty(foundSpecificName))
+                {
+                    if (!string.IsNullOrEmpty(foundCategory))
+                    {
+                        if (foundCategory.StartsWith("发布日期：") || foundCategory.StartsWith("发布日期:"))
+                            parts.Add($"{foundSpecificName} ({foundCategory})");
+                        else if (!foundSpecificName.Contains(foundCategory))
+                            parts.Add($"{foundCategory}：{foundSpecificName}");
+                        else
+                            parts.Add(foundSpecificName);
+                    }
+                    else
+                    {
+                        parts.Add(foundSpecificName);
+                    }
+                    primaryResolved = true;
+                }
+                else if (!string.IsNullOrEmpty(foundCategory))
+                {
+                    if (!string.IsNullOrEmpty(boxNum) && !foundCategory.Contains(boxNum))
+                        parts.Add($"{foundCategory} 第{boxNum}期");
+                    else
+                        parts.Add(foundCategory);
+                    primaryResolved = true;
+                }
             }
 
             // Description: footer.summary or summary — adds context like "Destruction Is Inevitable"
@@ -1055,7 +1198,7 @@ namespace DuelLinksAccess
                     if (!string.IsNullOrEmpty(value) && !IsPlaceholderText(value))
                     {
                         string cleaned = StripRichText(value);
-                        if (!parts.Contains(cleaned))
+                        if (!parts.Contains(cleaned) && cleaned != foundSpecificName && cleaned != foundCategory)
                             parts.Add(cleaned);
                         break;
                     }
@@ -1085,6 +1228,22 @@ namespace DuelLinksAccess
                     string progress = StripRichText(extext);
                     if (!string.IsNullOrEmpty(progress))
                         parts.Add(progress);
+                }
+            }
+            catch { }
+
+            // Price / cost if available directly in clientwork data
+            try
+            {
+                string priceVal = Il2CppYgomSystem.Utility.ClientWork
+                    .getStringByJsonPath(dataPath + ".price", "");
+                if (string.IsNullOrEmpty(priceVal))
+                    priceVal = Il2CppYgomSystem.Utility.ClientWork.getStringByJsonPath(dataPath + ".price_text", "");
+                if (!string.IsNullOrEmpty(priceVal) && !parts.Contains(priceVal))
+                {
+                    string cleanedPrice = StripRichText(priceVal).Trim();
+                    if (!string.IsNullOrEmpty(cleanedPrice) && !cleanedPrice.StartsWith("0"))
+                        parts.Add($"价格：{cleanedPrice}");
                 }
             }
             catch { }

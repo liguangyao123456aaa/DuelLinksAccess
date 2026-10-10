@@ -590,6 +590,7 @@ namespace DuelLinksAccess
             _english["shop_category"] = "{0}，共 {1} 个商品";
             _english["shop_item_position"] = "{2}，第 {0} 个，共 {1} 个";
             _english["shop_gems"] = "宝石";
+            _english["shop_gold"] = "金币";
             _english["shop_crystals"] = "充值晶石";
             _english["shop_balance_unknown"] = "余额未知";
             _english["shop_bonus"] = "附赠特惠";

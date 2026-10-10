@@ -1982,6 +1982,10 @@ namespace DuelLinksAccess
                 else
                     ScreenReader.Say(Loc.Get("screen_no_text"));
             }
+            else if (InputManager.TryConsumeKeyDown(KeyCode.G))
+            {
+                AnnounceCurrencyBalances();
+            }
             else if (InputManager.TryConsumeKeyDown(KeyCode.Space))
             {
                 // If a click-to-continue TutorialArrow is active, dismiss it
@@ -2012,6 +2016,46 @@ namespace DuelLinksAccess
             {
                 GoBack();
             }
+        }
+
+        /// <summary>
+        /// Reads and announces all available currency balances (gems, gold, crystals)
+        /// by introspecting the active HeaderViewController.
+        /// </summary>
+        private void AnnounceCurrencyBalances()
+        {
+            try
+            {
+                var namedMgr = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedMgr != null)
+                {
+                    Il2CppYgomSystem.UI.ViewControllerManager baseMgr;
+                    if (namedMgr.TryGetValue("base", out baseMgr) && baseMgr != null)
+                    {
+                        var topVc = baseMgr.GetStackTopViewController();
+                        var header = topVc?.TryCast<Il2CppYgomGame.Menu.HeaderViewController>();
+                        if (header != null)
+                        {
+                            var parts = new List<string>();
+                            string gems = header.gemNumber?.text?.Trim();
+                            if (!string.IsNullOrEmpty(gems)) parts.Add($"{gems} {Loc.Get("shop_gems")}");
+                            string gold = header.goldNumber?.text?.Trim();
+                            if (!string.IsNullOrEmpty(gold)) parts.Add($"{gold} {Loc.Get("shop_gold")}");
+                            string cr = header.crNumber?.text?.Trim();
+                            if (!string.IsNullOrEmpty(cr)) parts.Add($"{cr} {Loc.Get("shop_crystals")}");
+
+                            if (parts.Count > 0)
+                            {
+                                ScreenReader.Say(string.Join(", ", parts));
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            ScreenReader.Say(Loc.Get("shop_balance_unknown"));
         }
 
         /// <summary>

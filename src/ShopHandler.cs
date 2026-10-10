@@ -588,6 +588,42 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Reads the gold balance from HeaderViewController.goldNumber.
+        /// </summary>
+        private string ReadGoldBalance()
+        {
+            try
+            {
+                var namedMgr = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (namedMgr == null) return null;
+
+                Il2CppYgomSystem.UI.ViewControllerManager baseMgr;
+                if (!namedMgr.TryGetValue("base", out baseMgr) || baseMgr == null)
+                    return null;
+
+                var topVc = baseMgr.GetStackTopViewController();
+                if (topVc == null) return null;
+
+                var header = topVc.TryCast<HeaderViewController>();
+                if (header == null) return null;
+
+                var goldText = header.goldNumber;
+                if (goldText != null)
+                {
+                    string text = goldText.text;
+                    if (!string.IsNullOrEmpty(text) && text.Trim().Length > 0)
+                        return text.Trim();
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "Shop",
+                    $"ReadGoldBalance error: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
         /// Reads all available currency balances and formats them.
         /// </summary>
         private string ReadAllBalances()
@@ -601,6 +637,10 @@ namespace DuelLinksAccess
             string crystals = ReadCrystalBalance();
             if (!string.IsNullOrEmpty(crystals))
                 parts.Add(crystals + " " + Loc.Get("shop_crystals"));
+
+            string gold = ReadGoldBalance();
+            if (!string.IsNullOrEmpty(gold))
+                parts.Add(gold + " " + Loc.Get("shop_gold"));
 
             if (parts.Count == 0)
                 return Loc.Get("shop_balance_unknown");
@@ -1355,10 +1395,11 @@ namespace DuelLinksAccess
 
             // 1. Try titleLabel Text component
             string title = SafeReadText(item.titleLabel);
-            if (!string.IsNullOrEmpty(title))
+            if (!string.IsNullOrEmpty(title) && !LabelExtractor.IsGenericBoxCategory(title))
                 return title;
 
             // 2. Try ItemData dictionary
+            string specificName = null;
             try
             {
                 var ds = item.ItemData;
@@ -1371,7 +1412,14 @@ namespace DuelLinksAccess
                         {
                             string name = val.ToString();
                             if (!string.IsNullOrEmpty(name))
-                                return LabelExtractor.StripRichText(name.Trim());
+                            {
+                                string clean = LabelExtractor.StripRichText(name.Trim());
+                                if (!LabelExtractor.IsGenericBoxCategory(clean))
+                                {
+                                    specificName = clean;
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -1382,19 +1430,42 @@ namespace DuelLinksAccess
                     $"GetStandardItemName ItemData error: {ex.Message}");
             }
 
-            // 3. Fallback to child texts or label
-            if (item.gameObject != null)
+            // Try caption on item if still no specific name
+            if (string.IsNullOrEmpty(specificName))
             {
-                string childText = LabelExtractor.GetChildText(item.gameObject);
-                if (!string.IsNullOrEmpty(childText))
-                    return childText;
-
-                string label = LabelExtractor.GetLabel(item.gameObject);
-                if (!string.IsNullOrEmpty(label) && label != "按钮" && label != "Button")
-                    return label;
+                string cap = SafeReadText(item.caption);
+                if (!string.IsNullOrEmpty(cap) && !LabelExtractor.IsGenericBoxCategory(cap))
+                    specificName = cap;
             }
 
-            return null;
+            // 3. Fallback to child texts or label
+            if (string.IsNullOrEmpty(specificName) && item.gameObject != null)
+            {
+                string childText = LabelExtractor.GetChildText(item.gameObject);
+                if (!string.IsNullOrEmpty(childText) && !LabelExtractor.IsGenericBoxCategory(childText))
+                {
+                    specificName = childText;
+                }
+                else
+                {
+                    string label = LabelExtractor.GetLabel(item.gameObject);
+                    if (!string.IsNullOrEmpty(label) && label != "按钮" && label != "Button")
+                    {
+                        if (!LabelExtractor.IsGenericBoxCategory(label))
+                            specificName = label;
+                    }
+                }
+            }
+
+            // Combine category and specific name if title is a generic category
+            if (!string.IsNullOrEmpty(specificName))
+            {
+                if (!string.IsNullOrEmpty(title) && LabelExtractor.IsGenericBoxCategory(title) && !specificName.Contains(title))
+                    return $"{title}：{specificName}";
+                return specificName;
+            }
+
+            return title;
         }
 
         private string FormatStandardItemCompact(StandardItem item)
