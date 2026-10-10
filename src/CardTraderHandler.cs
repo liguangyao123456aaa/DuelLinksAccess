@@ -649,9 +649,16 @@ namespace DuelLinksAccess
                 // dispatches by the *centered* item's type. The cell's own
                 // Button.onClick is NOT the tap path — invoking it silently
                 // no-ops (2026-08-02 log: invoked onClick, no sub-screen opened).
-                // Since we just centered the carousel with SetCurrent, calling
-                // OnClickCard replays a genuine tap on this cell.
-                if (item.itemId <= 0)
+                bool isSpecialSubScreen = item.itemId <= 0
+                    || type == CardTraderInfoBase.Type.RespectOrb
+                    || type == CardTraderInfoBase.Type.BoxChip
+                    || type == CardTraderInfoBase.Type.ExItem
+                    || type == CardTraderInfoBase.Type.Process
+                    || type == CardTraderInfoBase.Type.Chroniclizer
+                    || type == CardTraderInfoBase.Type.ChangeSkill
+                    || type == CardTraderInfoBase.Type.SkillTicket;
+
+                if (isSpecialSubScreen)
                 {
                     _vc.OnClickCard(item.itemId, item.rareId);
                     _operationCooldown = OperationCooldownTime;

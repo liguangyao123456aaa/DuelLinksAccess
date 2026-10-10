@@ -189,7 +189,8 @@ namespace DuelLinksAccess
             string modeName = GetModeName();
             if (_cardIds.Count > 0)
             {
-                ScreenReader.Say(Loc.Get("ticket_entered", _cardIds.Count));
+                string title = GetScreenTitle();
+                ScreenReader.Say($"{title}。共有 {_cardIds.Count} 张可选卡片。左右方向键浏览，回车键选择。");
                 AnnounceCurrentCard(queued: true);
             }
             else
@@ -397,7 +398,8 @@ namespace DuelLinksAccess
             if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
             {
                 RefreshCardList();
-                ScreenReader.Say(Loc.Get("ticket_entered", _cardIds.Count));
+                string title = GetScreenTitle();
+                ScreenReader.Say($"{title}。共有 {_cardIds.Count} 张可选卡片。左右方向键浏览，回车键选择。");
                 if (_cardIds.Count > 0)
                     AnnounceCurrentCard(queued: true);
                 return;
@@ -577,6 +579,19 @@ namespace DuelLinksAccess
         /// <summary>
         /// Dynamically introspects the currency or exchange medium name from the VC hierarchy.
         /// (Soft-coded: looks for title Text, item paths, or falls back gracefully).
+        /// <summary>
+        /// Derives the clean user-facing title of the active CardGetter screen.
+        /// </summary>
+        public string GetScreenTitle()
+        {
+            string raw = null;
+            try { raw = _vc?.TitleLabel(); } catch { }
+            return TicketExchangePolicy.ResolveTitle(raw, GetModeName());
+        }
+
+        /// <summary>
+        /// Dynamically introspects the currency or exchange medium name from the VC hierarchy.
+        /// (Soft-coded: looks for title Text, item paths, or falls back gracefully).
         /// </summary>
         public string GetCurrencyName()
         {
@@ -584,6 +599,15 @@ namespace DuelLinksAccess
 
             try
             {
+                string raw = null;
+                try { raw = _vc.TitleLabel(); } catch { }
+                string mode = GetModeName();
+                string path = null;
+                try { path = _vc.needItemPath; } catch { }
+
+                string candidate = TicketExchangePolicy.ResolveCurrencyName(raw, mode, path);
+                if (candidate != "兑换券") return candidate;
+
                 // Check all Text components on _vc to find screen header / title
                 var texts = _vc.GetComponentsInChildren<UnityEngine.UI.Text>(true);
                 if (texts != null)
@@ -594,29 +618,12 @@ namespace DuelLinksAccess
                         string txt = t.text?.Trim();
                         if (string.IsNullOrEmpty(txt)) continue;
 
-                        if (txt.EndsWith("兑换") && txt.Length > 2)
-                        {
-                            return txt.Substring(0, txt.Length - 2);
-                        }
-                        if (txt.Contains("宝珠") || txt.Contains("兑换券") || txt.Contains("水晶") || txt.Contains("金币") || txt.Contains("宝石"))
-                        {
-                            if (!txt.Contains("持有") && !txt.Contains("数量") && txt.Length <= 12)
-                            {
-                                return txt.Replace("兑换", "");
-                            }
-                        }
+                        string resolved = TicketExchangePolicy.ResolveCurrencyName(txt, mode, path);
+                        if (resolved != "兑换券") return resolved;
                     }
                 }
 
-                // Check needItemPath or mode
-                string path = _vc.needItemPath;
-                if (!string.IsNullOrEmpty(path))
-                {
-                    if (path.IndexOf("jewel", StringComparison.OrdinalIgnoreCase) >= 0 || path.IndexOf("orb", StringComparison.OrdinalIgnoreCase) >= 0)
-                        return "宝珠";
-                    if (path.IndexOf("ticket", StringComparison.OrdinalIgnoreCase) >= 0)
-                        return "兑换券";
-                }
+                return candidate;
             }
             catch { }
 
@@ -740,8 +747,8 @@ namespace DuelLinksAccess
                     return;
                 }
 
-                // Fallback: just announce card count
-                ScreenReader.Say(Loc.Get("ticket_entered", _cardIds.Count));
+                string title = GetScreenTitle();
+                ScreenReader.Say($"{title}。共有 {_cardIds.Count} 张可选卡片。当前兑换媒介：{curName}");
             }
             catch (Exception ex)
             {

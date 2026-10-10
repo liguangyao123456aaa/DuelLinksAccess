@@ -2480,59 +2480,87 @@ namespace DuelLinksAccess
                     }
                 }
 
-                // ConfirmDialogViewController (ticket exchange, card trader, etc.)
-                // Both "btn" GOs share the same onClick handler in game code, so synthetic
-                // button click triggers unintended behavior or no-ops when covered.
-                // We resolve via semantic intent heuristics (zh/ja/en) and direct invocation.
+                // ConfirmDialogViewController (ticket exchange, card trader, item exchange, etc.)
+                // Pure soft-code direct invocation: invokes clickYesAction(exchangeNum) / clickNoAction
+                // and native OnClickedYes/No directly. Eliminates hardware mouse offset misclicks.
                 var confirmVc = FindVcInStack<
                     Il2CppYgomGame.Menu.ConfirmDialogViewController>("dialog");
                 if (confirmVc != null)
                 {
                     if (IsNegativeAction(item.Label, item.Go))
                     {
-                        MelonLogger.Msg($"[Dialog] ConfirmDialog: negative action recognized for '{item.Label}', calling OnClickedNo()");
-                        confirmVc.OnClickedNo();
-                        var btn = item.Go?.GetComponent<Button>();
+                        MelonLogger.Msg($"[Dialog] ConfirmDialog: negative action recognized for '{item.Label}', invoking clickNoAction/OnClickedNo");
+                        try
+                        {
+                            if (confirmVc.clickNoAction != null)
+                            {
+                                MelonLogger.Msg("[Dialog] ConfirmDialog: invoking clickNoAction directly");
+                                confirmVc.clickNoAction.Invoke();
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            MelonLogger.Msg($"[Dialog] ConfirmDialog clickNoAction error: {ex.Message}");
+                        }
+
+                        try { confirmVc.OnClickedNo(); }
+                        catch (Exception ex) { MelonLogger.Msg($"[Dialog] ConfirmDialog OnClickedNo error: {ex.Message}"); }
+
+                        var btn = item.Go?.GetComponentInParent<Button>();
                         if (btn != null && btn.interactable)
                         {
                             try { btn.onClick?.Invoke(); } catch { }
                         }
+
                         try
                         {
-                            var eventData = new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current);
-                            UnityEngine.EventSystems.ExecuteEvents.Execute(item.Go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
-                            UnityEngine.EventSystems.ExecuteEvents.Execute(item.Go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
-                            UnityEngine.EventSystems.ExecuteEvents.Execute(item.Go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                            if (confirmVc.gameObject != null && confirmVc.gameObject.activeInHierarchy)
+                            {
+                                confirmVc.SendBack();
+                            }
                         }
                         catch { }
-                        if (item.Go != null && Main.TryGetUiScreenPos(item.Go, out Vector2 clickPos))
-                        {
-                            Main.ClickViaHardwareMouse(clickPos, "ConfirmDialog-No-Hardware");
-                        }
+
                         ScreenReader.Say(item.Label);
                         return true;
                     }
                     else if (IsAffirmativeAction(item.Label, item.Go))
                     {
-                        MelonLogger.Msg($"[Dialog] ConfirmDialog: affirmative action recognized for '{item.Label}', calling OnClickedYes()");
-                        confirmVc.OnClickedYes();
-                        var btn = item.Go?.GetComponent<Button>();
+                        MelonLogger.Msg($"[Dialog] ConfirmDialog: affirmative action recognized for '{item.Label}', invoking clickYesAction/OnClickedYes");
+                        
+                        int num = 1;
+                        try
+                        {
+                            num = confirmVc.exchangeNum > 0 ? confirmVc.exchangeNum : 1;
+                            if (confirmVc.clickYesAction != null)
+                            {
+                                MelonLogger.Msg($"[Dialog] ConfirmDialog: invoking clickYesAction({num}) directly");
+                                confirmVc.clickYesAction.Invoke(num);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            MelonLogger.Msg($"[Dialog] ConfirmDialog clickYesAction error: {ex.Message}");
+                        }
+
+                        try { confirmVc.OnClickedYes(); }
+                        catch (Exception ex) { MelonLogger.Msg($"[Dialog] ConfirmDialog OnClickedYes error: {ex.Message}"); }
+
+                        var btn = item.Go?.GetComponentInParent<Button>();
                         if (btn != null && btn.interactable)
                         {
                             try { btn.onClick?.Invoke(); } catch { }
                         }
+
                         try
                         {
-                            var eventData = new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current);
-                            UnityEngine.EventSystems.ExecuteEvents.Execute(item.Go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
-                            UnityEngine.EventSystems.ExecuteEvents.Execute(item.Go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
-                            UnityEngine.EventSystems.ExecuteEvents.Execute(item.Go, eventData, UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                            if (confirmVc.gameObject != null && confirmVc.gameObject.activeInHierarchy)
+                            {
+                                confirmVc.SendBack();
+                            }
                         }
                         catch { }
-                        if (item.Go != null && Main.TryGetUiScreenPos(item.Go, out Vector2 clickPos))
-                        {
-                            Main.ClickViaHardwareMouse(clickPos, "ConfirmDialog-Yes-Hardware");
-                        }
+
                         ScreenReader.Say(item.Label);
                         return true;
                     }
@@ -2542,17 +2570,25 @@ namespace DuelLinksAccess
                         var buttons = confirmVc.GetComponentsInChildren<Button>(true);
                         if (buttons != null && buttons.Length >= 2)
                         {
-                            if (item.Go == buttons[0].gameObject)
+                            if (item.Go == buttons[0].gameObject || (item.Go != null && item.Go.transform.IsChildOf(buttons[0].transform)))
                             {
                                 MelonLogger.Msg($"[Dialog] ConfirmDialog: ambiguous '{item.Label}', mapped to button[0] -> OnClickedNo()");
-                                confirmVc.OnClickedNo();
+                                try { confirmVc.clickNoAction?.Invoke(); } catch { }
+                                try { confirmVc.OnClickedNo(); } catch { }
+                                try { buttons[0].onClick?.Invoke(); } catch { }
+                                try { confirmVc.SendBack(); } catch { }
                                 ScreenReader.Say(item.Label);
                                 return true;
                             }
-                            else if (item.Go == buttons[1].gameObject)
+                            else if (item.Go == buttons[1].gameObject || (item.Go != null && item.Go.transform.IsChildOf(buttons[1].transform)))
                             {
                                 MelonLogger.Msg($"[Dialog] ConfirmDialog: ambiguous '{item.Label}', mapped to button[1] -> OnClickedYes()");
-                                confirmVc.OnClickedYes();
+                                int num = 1;
+                                try { num = confirmVc.exchangeNum > 0 ? confirmVc.exchangeNum : 1; } catch { }
+                                try { confirmVc.clickYesAction?.Invoke(num); } catch { }
+                                try { confirmVc.OnClickedYes(); } catch { }
+                                try { buttons[1].onClick?.Invoke(); } catch { }
+                                try { confirmVc.SendBack(); } catch { }
                                 ScreenReader.Say(item.Label);
                                 return true;
                             }
