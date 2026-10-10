@@ -69,10 +69,11 @@ namespace DuelLinksAccess
                 // Check multiple managers in priority order.
                 string dialogName = GetTopViewName(namedManager, "dialog");
                 string dialogBaseName = GetTopViewName(namedManager, "dialogbase");
+                string cardDetailName = GetTopViewName(namedManager, "carddetail");
                 string contentName = GetTopViewName(namedManager, "content");
                 string baseName = GetTopViewName(namedManager, "base");
 
-                // Priority: dialog > dialogbase > content > base
+                // Priority: dialog > dialogbase > carddetail > content > base
                 // Skip known container/overlay names that don't represent actual screens
                 string goName = null;
                 bool fromDialogManager = false;
@@ -89,6 +90,12 @@ namespace DuelLinksAccess
                 {
                     goName = dialogBaseName;
                     fromDialogManager = true;
+                }
+                else if (!string.IsNullOrEmpty(cardDetailName)
+                    && cardDetailName != "CardDetailContentManager")
+                {
+                    goName = cardDetailName;
+                    fromDialogManager = false;
                 }
                 else if (!string.IsNullOrEmpty(contentName)
                     && contentName != "Standby")

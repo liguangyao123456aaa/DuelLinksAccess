@@ -55,6 +55,7 @@ namespace DuelLinksAccess
         private CardTraderHandler _cardTraderHandler;
         private CardCatalogHandler _cardCatalogHandler;
         private CardTransferHandler _cardTransferHandler;
+        private CardDetailHandler _cardDetailHandler;
         private HomeHandler _homeHandler;
 
         // Orphaned TutorialArrow tracking — for arrows on the dialog stack
@@ -116,6 +117,7 @@ namespace DuelLinksAccess
             _cardTraderHandler = new CardTraderHandler();
             _cardCatalogHandler = new CardCatalogHandler();
             _cardTransferHandler = new CardTransferHandler();
+            _cardDetailHandler = new CardDetailHandler();
             // Lets the catalog hand the shared header/menu (filters, sort,
             // search) back to ScreenButtonHandler via a Tab zone-toggle.
             _cardCatalogHandler.SetScreenButtonHandler(_screenButtonHandler);
@@ -356,6 +358,10 @@ namespace DuelLinksAccess
             // Dialog handler — also handles duel dialogs (Yes/No, effect selection)
             _dialogHandler?.Update();
             if (_dialogHandler?.IsActive == true) return;
+
+            // Card detail handler — intercepts CardDetail popup on top of Shop/CardTrader/Deck
+            _cardDetailHandler?.Update();
+            if (_cardDetailHandler?.IsActive == true) return;
 
             // Safety net: TutorialArrow on dialog stack but screen is not Dialog/Duel.
             // Happens during ScenarioPlayerPart cutscenes — auto-dismiss click-to-continue.
