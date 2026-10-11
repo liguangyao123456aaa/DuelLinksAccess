@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
+using MelonLoader;
 using UnityEngine;
 using Il2CppYgomGame.CardList;
 using Il2CppYgomGame.Deck;
+using Il2CppYgomGame.Single;
+using Il2CppYgomGame.Utility;
 
 namespace DuelLinksAccess
 {
@@ -54,6 +57,12 @@ namespace DuelLinksAccess
         private bool _awaitingExchangeResult;
         private bool _exchangeDialogSeen;
 
+        // Post-filter / search refresh guard. When user opens filter or search
+        // (F or Ctrl+S), we watch for the dialog to open and close, then refilter
+        // and refresh the displayed card list automatically.
+        private bool _awaitingFilterResult;
+        private bool _filterDialogSeen;
+
         #endregion
 
         #region Properties
@@ -101,6 +110,9 @@ namespace DuelLinksAccess
             if (_awaitingExchangeResult)
                 CheckPostExchangeRefresh();
 
+            if (_awaitingFilterResult)
+                CheckPostFilterRefresh();
+
             ProcessInput();
         }
 
@@ -120,9 +132,45 @@ namespace DuelLinksAccess
             _initialScanAttempts = 0;
             _awaitingExchangeResult = false;
             _exchangeDialogSeen = false;
+            _awaitingFilterResult = false;
+            _filterDialogSeen = false;
 
             DebugLogger.Log(LogCategory.Handler, "TicketExchange",
                 $"Activated (mode={GetModeName()}), waiting for initial scan...");
+        }
+
+        /// <summary>
+        /// Watches for the filter or search dialog to appear and then close,
+        /// then forces a fresh refilter and card list reload.
+        /// </summary>
+        private void CheckPostFilterRefresh()
+        {
+            if (GameStateTracker.CurrentScreen == GameScreen.Dialog)
+            {
+                _filterDialogSeen = true;
+                return;
+            }
+
+            // Dialog hasn't appeared yet (still opening) — keep waiting
+            if (!_filterDialogSeen) return;
+
+            _awaitingFilterResult = false;
+            _filterDialogSeen = false;
+
+            MelonLogger.Msg("[TicketExchange] Filter/Search dialog closed, updating filtered cards...");
+            try { _vc?.refilter(); } catch { }
+            RefreshCardList();
+
+            _focusIndex = 0;
+            if (_cardIds.Count > 0)
+            {
+                ScreenReader.Say($"搜索与筛选已更新，共有 {_cardIds.Count} 张卡片。");
+                AnnounceCurrentCard(queued: true);
+            }
+            else
+            {
+                ScreenReader.Say("搜索与筛选已更新，没有找到符合条件的卡片。");
+            }
         }
 
         /// <summary>
@@ -259,41 +307,33 @@ namespace DuelLinksAccess
             {
                 if (_vc == null) return;
 
-                // Try cardExchangeList first (List<int> of card IDs for ticket
-                // exchange). This source carries only the mrk — no rarity — so
-                // stored Kirarity is 0 for these entries.
-                var exchangeList = _vc.cardExchangeList;
-                if (exchangeList != null && exchangeList.Count > 0)
+                // Priority 1: Read from mainChoiceData (CardGetterChoiceData).
+                // This is the active filtered/sorted list managed by the game's filter engine.
+                var choiceData = _vc.mainChoiceData;
+                if (choiceData != null)
                 {
-                    for (int i = 0; i < exchangeList.Count; i++)
+                    int listNum = choiceData.GetListNum();
+                    if (listNum > 0)
                     {
-                        _cardIds.Add(exchangeList[i]);
-                        _cardKirarities.Add(0L);
-                    }
+                        for (int i = 0; i < listNum; i++)
+                        {
+                            var car = choiceData.GetListItem(i);
+                            _cardIds.Add(car.Mrk);
+                            _cardKirarities.Add(car.Kirarity);
+                        }
 
-                    DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                        $"Loaded {_cardIds.Count} cards from cardExchangeList");
-                    return;
+                        MelonLogger.Msg($"[TicketExchange] Loaded {_cardIds.Count} cards from mainChoiceData (listNum={listNum})");
+                        return;
+                    }
+                    else if (choiceData.filterCarList != null || choiceData.filterMrkList != null)
+                    {
+                        // Filter was applied and produced 0 results
+                        MelonLogger.Msg("[TicketExchange] mainChoiceData reports 0 cards after filter");
+                        return;
+                    }
                 }
 
-                // Fallback: try exchangeList (List<CardAndRarity>) — keep the
-                // real Kirarity so the exchange submits the exact card.
-                var carList = _vc.exchangeList;
-                if (carList != null && carList.Count > 0)
-                {
-                    for (int i = 0; i < carList.Count; i++)
-                    {
-                        var car = carList[i];
-                        _cardIds.Add(car.Mrk);
-                        _cardKirarities.Add(car.Kirarity);
-                    }
-
-                    DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                        $"Loaded {_cardIds.Count} cards from exchangeList");
-                    return;
-                }
-
-                // Another fallback: try choiceList (List<CardAndRarity>).
+                // Priority 2: Try choiceList (List<CardAndRarity> on VC)
                 var choiceList = _vc.choiceList;
                 if (choiceList != null && choiceList.Count > 0)
                 {
@@ -304,14 +344,42 @@ namespace DuelLinksAccess
                         _cardKirarities.Add(car.Kirarity);
                     }
 
-                    DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                        $"Loaded {_cardIds.Count} cards from choiceList");
+                    MelonLogger.Msg($"[TicketExchange] Loaded {_cardIds.Count} cards from choiceList");
+                    return;
+                }
+
+                // Priority 3: Try exchangeList (List<CardAndRarity>)
+                var carList = _vc.exchangeList;
+                if (carList != null && carList.Count > 0)
+                {
+                    for (int i = 0; i < carList.Count; i++)
+                    {
+                        var car = carList[i];
+                        _cardIds.Add(car.Mrk);
+                        _cardKirarities.Add(car.Kirarity);
+                    }
+
+                    MelonLogger.Msg($"[TicketExchange] Loaded {_cardIds.Count} cards from exchangeList");
+                    return;
+                }
+
+                // Priority 4: Fallback to cardExchangeList (raw unfiltered List<int> of card IDs)
+                var exchangeList = _vc.cardExchangeList;
+                if (exchangeList != null && exchangeList.Count > 0)
+                {
+                    for (int i = 0; i < exchangeList.Count; i++)
+                    {
+                        _cardIds.Add(exchangeList[i]);
+                        _cardKirarities.Add(0L);
+                    }
+
+                    MelonLogger.Msg($"[TicketExchange] Loaded {_cardIds.Count} cards from cardExchangeList fallback");
+                    return;
                 }
             }
             catch (Exception ex)
             {
-                DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                    $"RefreshCardList error: {ex.Message}");
+                MelonLogger.Msg($"[TicketExchange] RefreshCardList error: {ex.Message}");
             }
         }
 
@@ -387,6 +455,21 @@ namespace DuelLinksAccess
                 return;
             }
 
+            // F — open filter
+            if (InputManager.TryConsumeKeyDown(KeyCode.F))
+            {
+                OpenFilter();
+                return;
+            }
+
+            // Ctrl+S — open search
+            bool isCtrlHeld = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+            if (isCtrlHeld && InputManager.TryConsumeKeyDown(KeyCode.S))
+            {
+                OpenSearch();
+                return;
+            }
+
             // G — announce ticket/exchange info
             if (InputManager.TryConsumeKeyDown(KeyCode.G))
             {
@@ -397,11 +480,15 @@ namespace DuelLinksAccess
             // Tab — rescan card list
             if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
             {
+                try { _vc?.refilter(); } catch { }
                 RefreshCardList();
                 string title = GetScreenTitle();
-                ScreenReader.Say($"{title}。共有 {_cardIds.Count} 张可选卡片。左右方向键浏览，回车键选择。");
+                ScreenReader.Say($"{title}。共有 {_cardIds.Count} 张可选卡片。按F键筛选，Ctrl+S搜索，左右键浏览，回车选择。");
                 if (_cardIds.Count > 0)
+                {
+                    if (_focusIndex >= _cardIds.Count) _focusIndex = 0;
                     AnnounceCurrentCard(queued: true);
+                }
                 return;
             }
 
@@ -646,9 +733,21 @@ namespace DuelLinksAccess
                 }
 
                 int num = _vc.getItemNum();
-                if (num > 0)
+                if (num >= 0)
                 {
                     return num.ToString();
+                }
+
+                if (_vc.needItemId > 0)
+                {
+                    int n = Il2CppYgomGame.Utility.ItemUtil.GetNum(_vc.needItemId);
+                    if (n >= 0) return n.ToString();
+                }
+
+                if (_vc.itemId > 0)
+                {
+                    int n = Il2CppYgomGame.Utility.ItemUtil.GetNum(_vc.itemId);
+                    if (n >= 0) return n.ToString();
                 }
             }
             catch { }
@@ -663,8 +762,59 @@ namespace DuelLinksAccess
         {
             if (_vc == null) return null;
 
+            string curName = GetCurrencyName();
+            string balance = GetCurrencyBalance();
+            string balanceSuffix = !string.IsNullOrEmpty(balance) ? $" (持有 {balance})" : "";
+
             try
             {
+                // Card Trader mode: use official checkCost and createInfoBase
+                if (IsTraderMode())
+                {
+                    int currentMrk = (_focusIndex >= 0 && _focusIndex < _cardIds.Count) ? _cardIds[_focusIndex] : -1;
+                    if (currentMrk > 0)
+                    {
+                        bool canTrade = false;
+                        try { canTrade = _vc.checkCost(currentMrk); } catch { }
+                        string tradeStatus = canTrade ? "可兑换" : "无法兑换（材料或金币不足）";
+
+                        var costParts = new List<string>();
+                        try
+                        {
+                            var info = CardGetterViewController.createInfoBase(currentMrk);
+                            if (info != null)
+                            {
+                                if (info.goldUse > 0)
+                                    costParts.Add($"{info.goldUse} 金币");
+
+                                var ip = info.itemParam;
+                                if (ip != null)
+                                {
+                                    for (int i = 0; i < ip.Length; i++)
+                                    {
+                                        var entry = ip[i];
+                                        if (entry != null && entry.Length >= 2 && entry[0] > 0)
+                                        {
+                                            int iid = entry[0];
+                                            int count = entry[1];
+                                            string iName = "";
+                                            try { iName = ItemUtil.GetName(iid) ?? ""; } catch { }
+                                            if (string.IsNullOrWhiteSpace(iName)) iName = $"道具 {iid}";
+                                            costParts.Add($"{count} 个 {iName}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+
+                        if (costParts.Count > 0)
+                            return $"{tradeStatus}，消耗 {string.Join("、", costParts)}";
+
+                        return tradeStatus;
+                    }
+                }
+
                 // 1. Check choiceView for CardGetterItem at _focusIndex
                 var choiceView = _vc.choiceView;
                 if (choiceView != null)
@@ -678,7 +828,7 @@ namespace DuelLinksAccess
                             string cost = item.costText.text.Trim();
                             if (cost != "0" && cost != "")
                             {
-                                return $"价格：{cost} {GetCurrencyName()}";
+                                return $"价格：{cost} {curName}{balanceSuffix}";
                             }
                         }
                     }
@@ -691,7 +841,7 @@ namespace DuelLinksAccess
                     string cost = costText.text.Trim();
                     if (cost != "0" && cost != "")
                     {
-                        return $"价格：{cost} {GetCurrencyName()}";
+                        return $"价格：{cost} {curName}{balanceSuffix}";
                     }
                 }
 
@@ -708,7 +858,7 @@ namespace DuelLinksAccess
                             string txt = rt.text?.Trim();
                             if (int.TryParse(txt, out int val) && val > 0)
                             {
-                                return $"价格：{val} {GetCurrencyName()}";
+                                return $"价格：{val} {curName}{balanceSuffix}";
                             }
                         }
                     }
@@ -716,11 +866,23 @@ namespace DuelLinksAccess
             }
             catch { }
 
-            // If it's a 1-to-1 ticket exchange mode
-            string curName = GetCurrencyName();
+            // 4. Mode-specific cost fallbacks:
+            // BOX Chips exchange mode (always 100 Box Chips per card)
+            if (curName.Contains("芯片") || curName.Contains("Chip") || curName.Contains("BOX"))
+            {
+                return $"消耗 100 {curName}{balanceSuffix}";
+            }
+
+            // Ticket exchange mode (1 ticket per card)
             if (curName.Contains("券") || curName.Contains("Ticket"))
             {
-                return $"消耗 1 张 {curName}";
+                return $"消耗 1 张 {curName}{balanceSuffix}";
+            }
+
+            // Generic fallback with balance if available
+            if (!string.IsNullOrEmpty(balance))
+            {
+                return $"兑换媒介：{curName}{balanceSuffix}";
             }
 
             return null;
@@ -730,20 +892,78 @@ namespace DuelLinksAccess
         {
             try
             {
+                // Card Trader mode: report gold and required orb holdings
+                if (IsTraderMode())
+                {
+                    var balances = new List<string>();
+
+                    // 1. Gold balance
+                    int gold = -1;
+                    try { gold = ItemUtil.GetNum(ItemUtil.ItemIdType.Gold); } catch { }
+                    if (gold < 0)
+                    {
+                        try { gold = ItemUtil.GetNum(2); } catch { }
+                    }
+                    if (gold >= 0)
+                    {
+                        balances.Add($"金币: {gold}");
+                    }
+
+                    // 2. Focused card required items possession
+                    int currentMrk = (_focusIndex >= 0 && _focusIndex < _cardIds.Count) ? _cardIds[_focusIndex] : -1;
+                    if (currentMrk > 0)
+                    {
+                        try
+                        {
+                            var info = CardGetterViewController.createInfoBase(currentMrk);
+                            if (info?.itemParam != null)
+                            {
+                                for (int i = 0; i < info.itemParam.Length; i++)
+                                {
+                                    var entry = info.itemParam[i];
+                                    if (entry != null && entry.Length >= 2 && entry[0] > 0)
+                                    {
+                                        int iid = entry[0];
+                                        string iName = "";
+                                        try { iName = ItemUtil.GetName(iid) ?? ""; } catch { }
+                                        if (string.IsNullOrWhiteSpace(iName)) iName = $"道具 {iid}";
+                                        int num = 0;
+                                        try { num = ItemUtil.GetNum(iid); } catch { }
+                                        string s = $"{iName}: {num}";
+                                        if (!balances.Contains(s)) balances.Add(s);
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+
+                    if (balances.Count > 0)
+                    {
+                        ScreenReader.Say($"当前持有：{string.Join(", ", balances)}");
+                        return;
+                    }
+                }
+
                 string curName = GetCurrencyName();
                 string balance = GetCurrencyBalance();
 
                 if (!string.IsNullOrEmpty(balance))
                 {
+                    if (balance == "0" && (curName.Contains("券") || curName.Contains("Ticket")))
+                    {
+                        ScreenReader.Say($"当前正在使用兑换券挑选卡片（可兑换 1 张）。按回车键选择，空格键确认兑换。");
+                        return;
+                    }
                     ScreenReader.Say($"当前持有：{balance} {curName}");
                     return;
                 }
 
                 // Try to read exchange info text
-                string info = _vc?.cardExchangeInfo;
-                if (!string.IsNullOrEmpty(info))
+                string exInfo = _vc?.cardExchangeInfo;
+                if (!string.IsNullOrEmpty(exInfo))
                 {
-                    ScreenReader.Say(info);
+                    ScreenReader.Say(exInfo);
                     return;
                 }
 
@@ -755,6 +975,92 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Handler, "TicketExchange",
                     $"AnnounceExchangeInfo error: {ex.Message}");
             }
+        }
+
+        private void OpenFilter()
+        {
+            try
+            {
+                if (_vc == null) return;
+                if (_vc.filterAndSort == null)
+                {
+                    try { _vc.createFilter(); } catch { }
+                }
+
+                var fs = _vc.filterAndSort;
+                if (fs == null)
+                {
+                    fs = _vc.gameObject?.GetComponentInChildren<Il2CppYgomGame.Deck.FilterAndSort>(true);
+                }
+
+                if (fs != null)
+                {
+                    _awaitingFilterResult = true;
+                    _filterDialogSeen = false;
+                    fs.FilterSettingClicked(true);
+                    ScreenReader.Say("已打开卡片详细筛选");
+                    MelonLogger.Msg("[TicketExchange] OpenFilter: FilterSettingClicked(true) invoked");
+                }
+                else
+                {
+                    ScreenReader.Say("未找到筛选菜单");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[TicketExchange] OpenFilter error: {ex.Message}");
+                ScreenReader.Say("打开筛选失败");
+            }
+        }
+
+        private void OpenSearch()
+        {
+            try
+            {
+                if (_vc == null) return;
+                if (_vc.filterAndSort == null)
+                {
+                    try { _vc.createFilter(); } catch { }
+                }
+
+                var fs = _vc.filterAndSort;
+                if (fs == null)
+                {
+                    fs = _vc.gameObject?.GetComponentInChildren<Il2CppYgomGame.Deck.FilterAndSort>(true);
+                }
+
+                if (fs != null)
+                {
+                    _awaitingFilterResult = true;
+                    _filterDialogSeen = false;
+                    fs.SearchSettingClicked(true);
+                    ScreenReader.Say("已打开卡片文字搜索");
+                    MelonLogger.Msg("[TicketExchange] OpenSearch: SearchSettingClicked(true) invoked");
+                }
+                else
+                {
+                    ScreenReader.Say("未找到搜索菜单");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[TicketExchange] OpenSearch error: {ex.Message}");
+                ScreenReader.Say("打开搜索失败");
+            }
+        }
+
+        private bool IsTraderMode()
+        {
+            try
+            {
+                if (_vc == null) return false;
+                if (_vc.isTraderMode()) return true;
+                if (_vc.Mode == CardGetterViewController.MODE.CardTrader) return true;
+                string m = GetModeName();
+                if (m.IndexOf("Trader", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            }
+            catch { }
+            return false;
         }
 
         private void GoBack()

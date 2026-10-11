@@ -758,6 +758,17 @@ namespace DuelLinksAccess
                                     string iidStr = iidVal.ToString();
                                     if (int.TryParse(iidStr, out int iid) && iid > 0)
                                     {
+                                        // 1. Try ItemUtil.GetName first (items, orbs, keys, tickets, boosts)
+                                        string itemName = null;
+                                        try { itemName = Il2CppYgomGame.Utility.ItemUtil.GetName(iid); } catch { }
+                                        if (IsValidLabel(itemName))
+                                        {
+                                            DebugLogger.Log(LogCategory.Handler, "LabelEx",
+                                                $"Item name from %%iid%%={iid}: \"{itemName}\" on {go.name}");
+                                            return itemName;
+                                        }
+
+                                        // 2. Try CardFormatter.GetName (cards)
                                         string cardName = CardFormatter.GetName(iid);
                                         if (IsValidLabel(cardName) && cardName != Loc.Get("duel_unknown_card"))
                                         {
@@ -1041,6 +1052,35 @@ namespace DuelLinksAccess
 
             if (!primaryResolved)
             {
+                // 0. Check iid/item_id directly from ClientWork to resolve item/card name
+                try
+                {
+                    int cwIid = Il2CppYgomSystem.Utility.ClientWork.getIntByJsonPath(dataPath + ".iid", 0);
+                    if (cwIid <= 0) cwIid = Il2CppYgomSystem.Utility.ClientWork.getIntByJsonPath(dataPath + ".item_id", 0);
+                    if (cwIid <= 0 && dataDict != null)
+                    {
+                        Il2CppSystem.Object o;
+                        if ((dataDict.TryGetValue("iid", out o) || dataDict.TryGetValue("item_id", out o)) && o != null)
+                            int.TryParse(o.ToString(), out cwIid);
+                    }
+                    if (cwIid > 0)
+                    {
+                        string iName = null;
+                        try { iName = Il2CppYgomGame.Utility.ItemUtil.GetName(cwIid); } catch { }
+                        if (IsValidLabel(iName))
+                        {
+                            foundSpecificName = iName;
+                        }
+                        else
+                        {
+                            string cName = CardFormatter.GetName(cwIid);
+                            if (IsValidLabel(cName) && cName != Loc.Get("duel_unknown_card"))
+                                foundSpecificName = cName;
+                        }
+                    }
+                }
+                catch { }
+
                 // 1. Check title first to see if it provides a category or name
                 try
                 {
@@ -1050,7 +1090,7 @@ namespace DuelLinksAccess
                     {
                         if (IsGenericBoxCategory(tVal))
                             foundCategory = tVal;
-                        else
+                        else if (string.IsNullOrEmpty(foundSpecificName))
                             foundSpecificName = tVal;
                     }
                 }
@@ -1060,7 +1100,9 @@ namespace DuelLinksAccess
                 string[] candidateKeys = {
                     "name", "headline", "sub_title", "subtitle", "caption",
                     "box_name", "box_title", "pack_name", "package_name",
-                    "item_name", "product_name", "title", "label", "text"
+                    "item_name", "product_name", "title", "label", "text",
+                    "footer.summary", "footer.title", "detail.name", "detail.title",
+                    "banner.name", "banner.title", "box.name", "box.title", "item.name"
                 };
 
                 foreach (var key in candidateKeys)
@@ -1134,24 +1176,63 @@ namespace DuelLinksAccess
                     catch { }
                 }
 
-                // 5. Fallback: inspect child Text components of go
+                // 5. Fallback: inspect child YgomTextAccessor and Text components of go
                 if (string.IsNullOrEmpty(foundSpecificName) && go != null)
                 {
                     try
                     {
-                        var childTexts = go.GetComponentsInChildren<Text>(true);
-                        if (childTexts != null)
+                        // Check YgomTextAccessor first
+                        var childYtas = go.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(true);
+                        if (childYtas != null)
                         {
-                            foreach (var ct in childTexts)
+                            foreach (var yta in childYtas)
                             {
-                                if (ct == null) continue;
-                                string txt = StripRichText(ct.text)?.Trim();
+                                if (yta == null) continue;
+                                string txt = StripRichText(yta.text)?.Trim();
                                 if (IsValidLabel(txt) && !IsPlaceholderText(txt) && !IsGenericBoxCategory(txt)
                                     && txt != "Sale" && txt != "New" && txt != "NEW" && txt != "SALE"
                                     && !txt.All(char.IsDigit))
                                 {
                                     foundSpecificName = txt;
                                     break;
+                                }
+                            }
+                        }
+
+                        // Check Unity Text
+                        if (string.IsNullOrEmpty(foundSpecificName))
+                        {
+                            var childTexts = go.GetComponentsInChildren<Text>(true);
+                            if (childTexts != null)
+                            {
+                                foreach (var ct in childTexts)
+                                {
+                                    if (ct == null) continue;
+                                    string txt = StripRichText(ct.text)?.Trim();
+                                    if (IsValidLabel(txt) && !IsPlaceholderText(txt) && !IsGenericBoxCategory(txt)
+                                        && txt != "Sale" && txt != "New" && txt != "NEW" && txt != "SALE"
+                                        && !txt.All(char.IsDigit))
+                                    {
+                                        foundSpecificName = txt;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Sniff box/pack edition from Image / RawImage sprite or texture name
+                        if (string.IsNullOrEmpty(boxNum))
+                        {
+                            var imgs = go.GetComponentsInChildren<Image>(true);
+                            if (imgs != null)
+                            {
+                                foreach (var img in imgs)
+                                {
+                                    if (img?.sprite != null)
+                                    {
+                                        var m = Regex.Match(img.sprite.name, @"(?i)(?:vol|box)[_.-]?(\d+)");
+                                        if (m.Success) { boxNum = m.Groups[1].Value; break; }
+                                    }
                                 }
                             }
                         }
@@ -1179,6 +1260,12 @@ namespace DuelLinksAccess
                 }
                 else if (!string.IsNullOrEmpty(foundCategory))
                 {
+                    if (string.IsNullOrEmpty(boxNum) && go != null)
+                    {
+                        var mGo = Regex.Match(go.name, @"(?i)(?:item|box|pack|banner|cell)[_.-]?(\d+)");
+                        if (mGo.Success) boxNum = mGo.Groups[1].Value;
+                    }
+
                     if (!string.IsNullOrEmpty(boxNum) && !foundCategory.Contains(boxNum))
                         parts.Add($"{foundCategory} 第{boxNum}期");
                     else

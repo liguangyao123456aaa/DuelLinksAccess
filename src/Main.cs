@@ -269,6 +269,15 @@ namespace DuelLinksAccess
                 return true;
             }
 
+            // Ctrl+E or F8 = Export all owned cards and effects to text file
+            if ((IsControlHeld() && InputManager.TryConsumeKeyDown(KeyCode.E)) || InputManager.TryConsumeKeyDown(KeyCode.F8))
+            {
+#pragma warning disable CA1416
+                CardExporter.ExportOwnedCards();
+#pragma warning restore CA1416
+                return true;
+            }
+
             // F11 (no Ctrl) = Activate the current TutorialArrow target.
             // The dependable, always-available activation path. Fires both
             // ipclick and a hardware mouse click — the F9 working-pair from
@@ -1048,6 +1057,13 @@ namespace DuelLinksAccess
         {
             try
             {
+                // Viewport bounds check: Prevent moving mouse outside the game window!
+                if (unityPos.x < 0 || unityPos.x > Screen.width || unityPos.y < 0 || unityPos.y > Screen.height)
+                {
+                    MelonLogger.Msg($"[HardwareMouse] Ignored out-of-bounds click at ({unityPos.x:F0}, {unityPos.y:F0}), game screen is ({Screen.width}x{Screen.height}) ({reason})");
+                    return false;
+                }
+
                 // Unity: (0,0)=bottom-left client. Windows: (0,0)=top-left screen.
                 int clientX = (int)unityPos.x;
                 int clientY = Screen.height - (int)unityPos.y;

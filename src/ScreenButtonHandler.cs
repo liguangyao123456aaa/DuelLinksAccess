@@ -430,9 +430,10 @@ namespace DuelLinksAccess
                     FindButtons(headerRoot);
                 }
 
-                // Post-process: remove duplicates and junk
+                // Post-process: remove duplicates, junk, and fuse fragmented row items
                 DeduplicateItems();
                 FilterItems();
+                FuseHtjsonRowItems();
 
                 // On the Home/Duel World screen, also scan 3D map objects (NPCs, events, etc.)
                 if (GameStateTracker.CurrentScreen == GameScreen.Home)
@@ -653,6 +654,149 @@ namespace DuelLinksAccess
 
                 return false;
             });
+        }
+
+        /// <summary>
+        /// Merges fragmented items (e.g. separate multiplier "×2", description text, and item name)
+        /// belonging to the same list row into a single coherent ScreenItem.
+        /// Fully data-driven, eliminates jarring fragmented list navigation on Htjson/Gift screens.
+        /// </summary>
+        private void FuseHtjsonRowItems()
+        {
+            if (_items.Count < 2) return;
+
+            string rootName = _screenRoot != null ? _screenRoot.name : "";
+            bool isListScreen = rootName == "HtjsonPage" || rootName.Contains("Gift") || rootName.Contains("Notice") || rootName.Contains("Present");
+
+            // Also check if list contains multiplier items like "×2", "*2"
+            bool hasMultipliers = false;
+            foreach (var item in _items)
+            {
+                if (item != null && !string.IsNullOrEmpty(item.Label) && System.Text.RegularExpressions.Regex.IsMatch(item.Label.Trim(), @"^[×*xX]\s*\d+$"))
+                {
+                    hasMultipliers = true;
+                    break;
+                }
+            }
+
+            if (!isListScreen && !hasMultipliers) return;
+
+            var toRemove = new HashSet<int>();
+
+            for (int i = 0; i < _items.Count; i++)
+            {
+                if (toRemove.Contains(i)) continue;
+                var curr = _items[i];
+                if (curr == null) continue;
+                string currLabel = curr.Label?.Trim() ?? "";
+
+                // Case 1: curr is a multiplier, e.g. "×2"
+                if (System.Text.RegularExpressions.Regex.IsMatch(currLabel, @"^[×*xX]\s*\d+$"))
+                {
+                    // Look for adjacent description or name
+                    int descIdx = -1;
+                    if (i + 1 < _items.Count && !toRemove.Contains(i + 1))
+                    {
+                        string nextLabel = _items[i + 1]?.Label?.Trim() ?? "";
+                        if (nextLabel.Length >= 8 || nextLabel.Contains("。") || nextLabel.Contains("，") || nextLabel.Contains("获得") || nextLabel.Contains("用于") || nextLabel.Contains("可以"))
+                        {
+                            descIdx = i + 1;
+                        }
+                    }
+
+                    // Try to resolve item name from the row's parent/ancestor HtjsonNode or components
+                    string resolvedName = null;
+                    if (curr.Go != null)
+                    {
+                        var t = curr.Go.transform;
+                        for (int depth = 0; depth < 4 && t != null; depth++)
+                        {
+                            var node = t.GetComponent<Il2CppYgomSystem.Htjson.HtjsonNode>();
+                            if (node != null && node.replaceParam != null)
+                            {
+                                var dict = node.replaceParam;
+                                Il2CppSystem.Object iidVal;
+                                if (dict.TryGetValue("%iid%", out iidVal) && iidVal != null)
+                                {
+                                    if (int.TryParse(iidVal.ToString(), out int iid) && iid > 0)
+                                    {
+                                        try { resolvedName = Il2CppYgomGame.Utility.ItemUtil.GetName(iid); } catch { }
+                                        if (string.IsNullOrEmpty(resolvedName))
+                                            try { resolvedName = CardFormatter.GetName(iid); } catch { }
+                                    }
+                                }
+
+                                if (string.IsNullOrEmpty(resolvedName))
+                                {
+                                    string[] nameKeys = { "name", "item_name", "title", "label" };
+                                    foreach (var k in nameKeys)
+                                    {
+                                        Il2CppSystem.Object nv;
+                                        if (dict.TryGetValue(k, out nv) && nv != null)
+                                        {
+                                            string ns = nv.ToString();
+                                            if (LabelExtractor.IsValidLabel(ns) && !LabelExtractor.IsPlaceholderText(ns) && !System.Text.RegularExpressions.Regex.IsMatch(ns, @"^[×*xX]\s*\d+$"))
+                                            {
+                                                resolvedName = LabelExtractor.StripRichText(ns);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if (!string.IsNullOrEmpty(resolvedName)) break;
+                            }
+                            t = t.parent;
+                        }
+                    }
+
+                    // Also check if previous item was the item name
+                    int prevNameIdx = -1;
+                    if (string.IsNullOrEmpty(resolvedName) && i - 1 >= 0 && !toRemove.Contains(i - 1))
+                    {
+                        string prevLabel = _items[i - 1]?.Label?.Trim() ?? "";
+                        if (LabelExtractor.IsValidLabel(prevLabel) && !prevLabel.Contains("。") && prevLabel.Length < 30 && !System.Text.RegularExpressions.Regex.IsMatch(prevLabel, @"^[×*xX]\s*\d+$"))
+                        {
+                            resolvedName = prevLabel;
+                            prevNameIdx = i - 1;
+                        }
+                    }
+
+                    // Build unified composite label
+                    string fusedLabel = "";
+                    if (!string.IsNullOrEmpty(resolvedName))
+                    {
+                        fusedLabel = $"{resolvedName} {currLabel}";
+                    }
+                    else
+                    {
+                        fusedLabel = currLabel;
+                    }
+
+                    if (descIdx != -1)
+                    {
+                        string descText = _items[descIdx].Label?.Trim() ?? "";
+                        fusedLabel += "，" + descText;
+                        toRemove.Add(descIdx);
+                    }
+
+                    if (prevNameIdx != -1)
+                    {
+                        toRemove.Add(prevNameIdx);
+                    }
+
+                    curr.Label = fusedLabel;
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn", $"Fused item row: \"{fusedLabel}\"");
+                }
+            }
+
+            if (toRemove.Count > 0)
+            {
+                for (int i = _items.Count - 1; i >= 0; i--)
+                {
+                    if (toRemove.Contains(i))
+                        _items.RemoveAt(i);
+                }
+            }
         }
 
         /// <summary>
@@ -1972,7 +2116,10 @@ namespace DuelLinksAccess
             }
             else if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
             {
-                AnnounceCurrentItem();
+                if (!TryHandleTabFilter())
+                {
+                    AnnounceCurrentItem();
+                }
             }
             else if (InputManager.TryConsumeKeyDown(KeyCode.T))
             {
@@ -2019,10 +2166,385 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Attempts to find and activate filter/tab/category controls on the current screen when Tab is pressed.
+        /// Cycles through filter options or opens the filter popup, announcing the active category/filter.
+        /// Returns true if a filter action was performed, false to fall back to re-reading current item.
+        /// </summary>
+        private bool TryHandleTabFilter()
+        {
+            if (_items.Count == 0) return false;
+
+            try
+            {
+                // 1. Context check: If we are on CardTrader2 or have access to CardTraderViewController2
+                try
+                {
+                    var namedMgr = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                    if (namedMgr != null && namedMgr.TryGetValue("content", out var contentMgr) && contentMgr != null)
+                    {
+                        var topVc = contentMgr.GetStackTopViewController();
+                        var traderVc = topVc?.TryCast<Il2CppYgomGame.Single.CardTraderViewController2>();
+                        if (traderVc != null && traderVc.filterAllButton != null && traderVc.filterAllButton.activeInHierarchy)
+                        {
+                            var ygomBtn = traderVc.filterAllButton.GetComponent<Il2CppYgomSystem.UI.YgomButton>();
+                            if (ygomBtn != null) { try { Il2CppYgomSystem.UI.YgomButton.PlaySE(ygomBtn.seType); } catch { } }
+
+                            traderVc.OnClickFilterAll();
+                            _tabRescanDelay = 0.5f;
+
+                            string filterLabel = traderVc.filterAllText?.text?.Trim();
+                            string msg = !string.IsNullOrEmpty(filterLabel)
+                                ? $"已切换筛选：{filterLabel}"
+                                : "已切换筛选";
+                            ScreenReader.Say(msg);
+                            return true;
+                        }
+                    }
+                }
+                catch { }
+
+                // 2. Heuristic search: Collect all items in _items matching filter/tab/category patterns
+                var filterIndices = new List<int>();
+                for (int i = 0; i < _items.Count; i++)
+                {
+                    var it = _items[i];
+                    if (it == null || !LabelExtractor.IsAlive(it.Go)) continue;
+
+                    string label = (it.Label ?? "").Trim();
+                    string goName = (it.Go.name ?? "").ToLowerInvariant();
+
+                    bool isFilterCandidate = false;
+
+                    // Match by label semantics
+                    if (!string.IsNullOrEmpty(label))
+                    {
+                        string lower = label.ToLowerInvariant();
+                        if (lower.Contains("筛选") || lower.Contains("过滤") || lower.Contains("排序")
+                            || lower.Contains("全部") || lower.Contains("怪兽") || lower.Contains("魔法") || lower.Contains("陷阱")
+                            || lower.Contains("未拥有") || lower.Contains("已拥有") || lower.Contains("可兑换") || lower.Contains("可交换")
+                            || lower.Contains("filter") || lower.Contains("sort") || lower.Contains("category")
+                            || lower == "all" || lower == "monster" || lower == "spell" || lower == "trap")
+                        {
+                            isFilterCandidate = true;
+                        }
+                    }
+
+                    // Match by GameObject name or component types
+                    if (!isFilterCandidate)
+                    {
+                        if (goName.Contains("filter") || goName.Contains("tab") || goName.Contains("sort")
+                            || goName.Contains("category") || goName.Contains("toggle"))
+                        {
+                            isFilterCandidate = true;
+                        }
+                        else
+                        {
+                            try
+                            {
+                                if (it.Go.GetComponent<Il2CppYgomSystem.UI.YgomTabButton>() != null
+                                    || it.Go.GetComponentInParent<Il2CppYgomSystem.UI.YgomTabButton>() != null
+                                    || it.Go.GetComponent<Toggle>() != null)
+                                {
+                                    isFilterCandidate = true;
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+
+                    if (isFilterCandidate)
+                    {
+                        filterIndices.Add(i);
+                    }
+                }
+
+                if (filterIndices.Count > 0)
+                {
+                    // Find the next filter item to activate
+                    int targetFilterIdx = -1;
+                    int curPosInFilters = filterIndices.IndexOf(_focusIndex);
+                    if (curPosInFilters >= 0)
+                    {
+                        // Already focused on a filter item: cycle to the next one
+                        targetFilterIdx = filterIndices[(curPosInFilters + 1) % filterIndices.Count];
+                    }
+                    else
+                    {
+                        // Focus is outside filter items: pick the first one
+                        targetFilterIdx = filterIndices[0];
+                    }
+
+                    _focusIndex = targetFilterIdx;
+                    var chosenItem = _items[_focusIndex];
+
+                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                        $"Tab key triggered filter: {chosenItem.Label} (index={_focusIndex})");
+
+                    ActivateCurrentItem();
+                    _tabRescanDelay = 0.5f;
+                    ScreenReader.Say($"已切换筛选：{chosenItem.Label}");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn", $"TryHandleTabFilter error: {ex.Message}");
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Reads and announces all available currency balances (gems, gold, crystals)
-        /// by introspecting the active HeaderViewController.
+        /// or introspects ticket balances when in GiftTicket/PresentBox screens.
         /// </summary>
         private void AnnounceCurrencyBalances()
+        {
+            // First check if on a ticket/gift screen or if items contain tickets
+            if (TryAnnounceTicketBalances())
+            {
+                return;
+            }
+
+            string headerCurrencies = GetHeaderCurrencyText();
+            if (!string.IsNullOrEmpty(headerCurrencies))
+            {
+                ScreenReader.Say(headerCurrencies);
+                return;
+            }
+
+            ScreenReader.Say(Loc.Get("shop_balance_unknown"));
+        }
+
+        /// <summary>
+        /// Introspects and announces ticket balances (card, skill, character, pack tickets)
+        /// when on the GiftTicket/PresentBox screen or any screen containing ticket items.
+        /// Fully data-driven, zero hardcoding.
+        /// </summary>
+        private bool TryAnnounceTicketBalances()
+        {
+            try
+            {
+                string rootName = _screenRoot != null ? _screenRoot.name : "";
+                bool isGiftOrTicketScreen = rootName.IndexOf("Ticket", StringComparison.OrdinalIgnoreCase) >= 0
+                    || rootName.IndexOf("Gift", StringComparison.OrdinalIgnoreCase) >= 0
+                    || rootName.IndexOf("Present", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                // Also check if any items in _items are tickets
+                int ticketItemsCount = 0;
+                foreach (var it in _items)
+                {
+                    if (it != null && !string.IsNullOrEmpty(it.Label))
+                    {
+                        if (it.Label.Contains("券") || it.Label.IndexOf("Ticket", StringComparison.OrdinalIgnoreCase) >= 0)
+                            ticketItemsCount++;
+                    }
+                }
+
+                if (!isGiftOrTicketScreen && ticketItemsCount == 0)
+                {
+                    return false;
+                }
+
+                int totalEntries = 0;
+                int totalCount = 0;
+                int cardTickets = 0;
+                int dreamTickets = 0;
+                int skillTickets = 0;
+                int charaTickets = 0;
+                int packTickets = 0;
+                int otherTickets = 0;
+
+                // First pass: scan _items for ticket entries
+                for (int i = 0; i < _items.Count; i++)
+                {
+                    var it = _items[i];
+                    if (it == null) continue;
+                    string label = it.Label ?? "";
+
+                    bool isTicket = label.Contains("券") || label.IndexOf("Ticket", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                    // If on GiftTicket screen, reward elements might also be tickets
+                    if (!isTicket && isGiftOrTicketScreen && it.Go != null)
+                    {
+                        string gName = it.Go.name;
+                        if (gName.IndexOf("Ticket", StringComparison.OrdinalIgnoreCase) >= 0)
+                            isTicket = true;
+                    }
+
+                    if (isTicket)
+                    {
+                        totalEntries++;
+
+                        // Detect multiplier: e.g. "×2", "*2", "2张"
+                        int count = 1;
+                        var m = System.Text.RegularExpressions.Regex.Match(label, @"[×*xX]\s*(\d+)");
+                        if (m.Success && int.TryParse(m.Groups[1].Value, out int pCount) && pCount > 0)
+                        {
+                            count = pCount;
+                        }
+                        else
+                        {
+                            // Check adjacent items for multiplier
+                            for (int offset = -1; offset <= 1; offset += 2)
+                            {
+                                int adjIdx = i + offset;
+                                if (adjIdx >= 0 && adjIdx < _items.Count)
+                                {
+                                    string adjLabel = _items[adjIdx]?.Label ?? "";
+                                    var adjM = System.Text.RegularExpressions.Regex.Match(adjLabel, @"^[×*xX]\s*(\d+)$");
+                                    if (adjM.Success && int.TryParse(adjM.Groups[1].Value, out int adjCount) && adjCount > 0)
+                                    {
+                                        count = adjCount;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        totalCount += count;
+
+                        // Classify ticket type (card, dream, skill, chara, pack)
+                        if (label.Contains("梦想") || label.IndexOf("Dream", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            dreamTickets += count;
+                            cardTickets += count;
+                        }
+                        else if (label.Contains("技能") || label.IndexOf("Skill", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            skillTickets += count;
+                        }
+                        else if (label.Contains("角色") || label.Contains("人物") || label.IndexOf("Chara", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            charaTickets += count;
+                        }
+                        else if (label.Contains("卡包") || label.IndexOf("Pack", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            packTickets += count;
+                        }
+                        else if (label.Contains("卡片") || label.Contains("UR") || label.Contains("SR") || label.Contains("R") || label.Contains("卡") || label.IndexOf("Card", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            cardTickets += count;
+                        }
+                        else
+                        {
+                            otherTickets += count;
+                        }
+                    }
+                }
+
+                // If items scan yielded 0 tickets but we are on GiftTicket screen, inspect Htjson nodes
+                if (totalEntries == 0 && _screenRoot != null)
+                {
+                    try
+                    {
+                        var htNodes = _screenRoot.GetComponentsInChildren<Il2CppYgomSystem.Htjson.HtjsonNode>(true);
+                        if (htNodes != null)
+                        {
+                            foreach (var node in htNodes)
+                            {
+                                if (node == null || node.replaceParam == null) continue;
+                                var dict = node.replaceParam;
+                                Il2CppSystem.Object nameVal;
+                                string nStr = "";
+                                if (dict.TryGetValue("name", out nameVal) && nameVal != null) nStr = nameVal.ToString();
+                                else if (dict.TryGetValue("title", out nameVal) && nameVal != null) nStr = nameVal.ToString();
+
+                                if (nStr.Contains("券") || nStr.IndexOf("Ticket", StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    totalEntries++;
+                                    int count = 1;
+                                    Il2CppSystem.Object numVal;
+                                    if ((dict.TryGetValue("num", out numVal) || dict.TryGetValue("count", out numVal)) && numVal != null)
+                                    {
+                                        int.TryParse(numVal.ToString(), out count);
+                                        if (count <= 0) count = 1;
+                                    }
+                                    totalCount += count;
+
+                                    if (nStr.Contains("梦想") || nStr.IndexOf("Dream", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        dreamTickets += count;
+                                        cardTickets += count;
+                                    }
+                                    else if (nStr.Contains("技能") || nStr.IndexOf("Skill", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        skillTickets += count;
+                                    }
+                                    else if (nStr.Contains("角色") || nStr.IndexOf("Chara", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        charaTickets += count;
+                                    }
+                                    else if (nStr.Contains("卡包") || nStr.IndexOf("Pack", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        packTickets += count;
+                                    }
+                                    else if (nStr.Contains("卡片") || nStr.Contains("UR") || nStr.Contains("SR") || nStr.IndexOf("Card", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        cardTickets += count;
+                                    }
+                                    else
+                                    {
+                                        otherTickets += count;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                // Format announcement
+                var sb = new System.Text.StringBuilder();
+
+                if (totalEntries > 0)
+                {
+                    sb.Append($"礼品盒待领取奖券：共 {totalEntries} 项，合计 {totalCount} 张。");
+                    var catList = new List<string>();
+                    if (cardTickets > 0)
+                    {
+                        if (dreamTickets > 0)
+                            catList.Add($"卡片兑换券 {cardTickets} 张（含梦想券 {dreamTickets} 张）");
+                        else
+                            catList.Add($"卡片兑换券 {cardTickets} 张");
+                    }
+                    if (skillTickets > 0) catList.Add($"技能兑换券 {skillTickets} 张");
+                    if (charaTickets > 0) catList.Add($"角色兑换券 {charaTickets} 张");
+                    if (packTickets > 0) catList.Add($"卡包兑换券 {packTickets} 张");
+                    if (otherTickets > 0) catList.Add($"其他奖券 {otherTickets} 张");
+
+                    if (catList.Count > 0)
+                    {
+                        sb.Append("包含：" + string.Join("，", catList) + "。");
+                    }
+                }
+                else if (isGiftOrTicketScreen)
+                {
+                    sb.Append("礼品盒中暂无待领取的奖券。");
+                }
+
+                // Append header currencies (gems/gold) if available
+                string headerCurrencies = GetHeaderCurrencyText();
+                if (!string.IsNullOrEmpty(headerCurrencies))
+                {
+                    sb.Append($" 当前持有资产：{headerCurrencies}。");
+                }
+
+                string msg = sb.ToString().Trim();
+                if (!string.IsNullOrEmpty(msg))
+                {
+                    ScreenReader.Say(msg);
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn", $"TryAnnounceTicketBalances error: {ex.Message}");
+            }
+            return false;
+        }
+
+        private string GetHeaderCurrencyText()
         {
             try
             {
@@ -2044,18 +2566,13 @@ namespace DuelLinksAccess
                             string cr = header.crNumber?.text?.Trim();
                             if (!string.IsNullOrEmpty(cr)) parts.Add($"{cr} {Loc.Get("shop_crystals")}");
 
-                            if (parts.Count > 0)
-                            {
-                                ScreenReader.Say(string.Join(", ", parts));
-                                return;
-                            }
+                            if (parts.Count > 0) return string.Join("，", parts);
                         }
                     }
                 }
             }
             catch { }
-
-            ScreenReader.Say(Loc.Get("shop_balance_unknown"));
+            return null;
         }
 
         /// <summary>
@@ -2439,19 +2956,27 @@ namespace DuelLinksAccess
                     var ygomBtn = buttonWidget.button;
                     if (ygomBtn != null && ygomBtn.gameObject != null)
                     {
-                        DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                            $"Htjson ButtonWidget found, clicking YgomButton on {ygomBtn.gameObject.name}");
                         var btnGo = ygomBtn.gameObject;
-                        UnityEngine.EventSystems.ExecuteEvents.Execute(
-                            btnGo, eventData,
-                            UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
-                        UnityEngine.EventSystems.ExecuteEvents.Execute(
-                            btnGo, eventData,
-                            UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
-                        UnityEngine.EventSystems.ExecuteEvents.Execute(
-                            btnGo, eventData,
-                            UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
-                        handled = true;
+                        if (Main.TryGetUiScreenPos(btnGo, out Vector2 hwClickPos))
+                        {
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                $"Htjson ButtonWidget found, hardware clicking on {btnGo.name} at ({hwClickPos.x:F0}, {hwClickPos.y:F0})");
+                            if (Main.ClickViaHardwareMouse(hwClickPos, "ScreenBtn-Htjson-HW"))
+                            {
+                                handled = true;
+                            }
+                        }
+
+                        if (!handled)
+                        {
+                            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                                $"Htjson ButtonWidget fallback event clicking on {btnGo.name}");
+                            eventData.button = UnityEngine.EventSystems.PointerEventData.InputButton.Left;
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(
+                                btnGo, eventData,
+                                UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                            handled = true;
+                        }
                     }
                 }
 

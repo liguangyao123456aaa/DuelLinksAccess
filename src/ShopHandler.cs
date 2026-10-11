@@ -1398,39 +1398,95 @@ namespace DuelLinksAccess
             if (!string.IsNullOrEmpty(title) && !LabelExtractor.IsGenericBoxCategory(title))
                 return title;
 
-            // 2. Try ItemData dictionary
             string specificName = null;
-            try
+
+            // 2. Scan child Text components on item.gameObject directly
+            // Instead of just checking the first text (which is often the generic category "主卡盒"),
+            // inspect all child texts to find the actual pack/box name or subtitle.
+            if (item.gameObject != null)
             {
-                var ds = item.ItemData;
-                if (ds != null)
+                try
                 {
-                    foreach (var key in new[] { "name", "item_name", "title", "itemName", "nameText", "caption", "item_title", "product_name" })
+                    var allTexts = item.gameObject.GetComponentsInChildren<Text>(true);
+                    if (allTexts != null)
                     {
-                        Il2CppSystem.Object val;
-                        if (ds.TryGetValue(key, out val) && val != null)
+                        foreach (var t in allTexts)
                         {
-                            string name = val.ToString();
-                            if (!string.IsNullOrEmpty(name))
+                            if (t == null) continue;
+                            string txt = LabelExtractor.StripRichText(t.text)?.Trim();
+                            if (!string.IsNullOrEmpty(txt)
+                                && !LabelExtractor.IsGenericBoxCategory(txt)
+                                && txt != "Sale" && txt != "SALE" && txt != "New" && txt != "NEW"
+                                && !IsAllDigits(txt)
+                                && txt != title)
                             {
-                                string clean = LabelExtractor.StripRichText(name.Trim());
-                                if (!LabelExtractor.IsGenericBoxCategory(clean))
+                                specificName = txt;
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 3. Try ItemData dictionary (check all keys)
+            if (string.IsNullOrEmpty(specificName))
+            {
+                try
+                {
+                    var ds = item.ItemData;
+                    if (ds != null)
+                    {
+                        // Priority keys
+                        foreach (var key in new[] { "name", "box_name", "box_title", "item_name", "title", "caption", "headline", "sub_title", "subtitle", "product_name" })
+                        {
+                            Il2CppSystem.Object val;
+                            if (ds.TryGetValue(key, out val) && val != null)
+                            {
+                                string name = val.ToString();
+                                if (!string.IsNullOrEmpty(name))
                                 {
-                                    specificName = clean;
-                                    break;
+                                    string clean = LabelExtractor.StripRichText(name.Trim());
+                                    if (!LabelExtractor.IsGenericBoxCategory(clean)
+                                        && clean != "Sale" && clean != "New" && !IsAllDigits(clean))
+                                    {
+                                        specificName = clean;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        // If still not found, check remaining keys
+                        if (string.IsNullOrEmpty(specificName))
+                        {
+                            var enumerator = ds.GetEnumerator();
+                            while (enumerator.MoveNext())
+                            {
+                                var entry = enumerator.Current;
+                                if (entry.Value != null)
+                                {
+                                    string s = LabelExtractor.StripRichText(entry.Value.ToString()?.Trim());
+                                    if (!string.IsNullOrEmpty(s) && s.Length >= 2 && s.Length <= 40
+                                        && !LabelExtractor.IsGenericBoxCategory(s)
+                                        && !s.Contains("{") && !s.Contains("[")
+                                        && s != "Sale" && s != "New" && !IsAllDigits(s))
+                                    {
+                                        specificName = s;
+                                        break;
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                DebugLogger.Log(LogCategory.Handler, "Shop",
-                    $"GetStandardItemName ItemData error: {ex.Message}");
+                catch (Exception ex)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "Shop", $"GetStandardItemName ItemData error: {ex.Message}");
+                }
             }
 
-            // Try caption on item if still no specific name
+            // 4. Try caption component on item
             if (string.IsNullOrEmpty(specificName))
             {
                 string cap = SafeReadText(item.caption);
@@ -1438,34 +1494,57 @@ namespace DuelLinksAccess
                     specificName = cap;
             }
 
-            // 3. Fallback to child texts or label
-            if (string.IsNullOrEmpty(specificName) && item.gameObject != null)
+            // 5. Try resolving from saleDate or itemImagePath/callUrl
+            string metaInfo = null;
+            string sDate = SafeReadText(item.saleDate);
+            if (!string.IsNullOrEmpty(sDate))
             {
-                string childText = LabelExtractor.GetChildText(item.gameObject);
-                if (!string.IsNullOrEmpty(childText) && !LabelExtractor.IsGenericBoxCategory(childText))
+                metaInfo = sDate.Replace("发布日期：", "").Replace("发布日期:", "").Trim();
+            }
+            else
+            {
+                // Try parse box number / edition from itemImagePath or callUrl
+                string path = item.itemImagePath ?? item.callUrl ?? "";
+                if (!string.IsNullOrEmpty(path))
                 {
-                    specificName = childText;
-                }
-                else
-                {
-                    string label = LabelExtractor.GetLabel(item.gameObject);
-                    if (!string.IsNullOrEmpty(label) && label != "按钮" && label != "Button")
+                    var match = System.Text.RegularExpressions.Regex.Match(path, @"\b(box|pack|vol)[_/-]?(\d+)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (match.Success)
                     {
-                        if (!LabelExtractor.IsGenericBoxCategory(label))
-                            specificName = label;
+                        metaInfo = $"第{match.Groups[2].Value}期";
                     }
                 }
             }
 
-            // Combine category and specific name if title is a generic category
+            // Combine category, specific name, and meta info
             if (!string.IsNullOrEmpty(specificName))
             {
                 if (!string.IsNullOrEmpty(title) && LabelExtractor.IsGenericBoxCategory(title) && !specificName.Contains(title))
-                    return $"{title}：{specificName}";
-                return specificName;
+                {
+                    return !string.IsNullOrEmpty(metaInfo) && !specificName.Contains(metaInfo)
+                        ? $"{title}：{specificName} ({metaInfo})"
+                        : $"{title}：{specificName}";
+                }
+                return !string.IsNullOrEmpty(metaInfo) && !specificName.Contains(metaInfo)
+                    ? $"{specificName} ({metaInfo})"
+                    : specificName;
+            }
+
+            if (!string.IsNullOrEmpty(metaInfo))
+            {
+                return !string.IsNullOrEmpty(title) ? $"{title} ({metaInfo})" : metaInfo;
             }
 
             return title;
+        }
+
+        private static bool IsAllDigits(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            for (int i = 0; i < s.Length; i++)
+            {
+                if (!char.IsDigit(s[i])) return false;
+            }
+            return true;
         }
 
         private string FormatStandardItemCompact(StandardItem item)

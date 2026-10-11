@@ -418,6 +418,20 @@ namespace DuelLinksAccess
                 return;
             }
 
+            // Ctrl+F — open card search
+            if (ctrlHeld && InputManager.TryConsumeKeyDown(KeyCode.F))
+            {
+                OpenSearch();
+                return;
+            }
+
+            // F — open card filter
+            if (!ctrlHeld && InputManager.TryConsumeKeyDown(KeyCode.F))
+            {
+                OpenFilter();
+                return;
+            }
+
             // Global hotkeys (available from ANY zone, including Toolbar)
             if (!ctrlHeld && InputManager.TryConsumeKeyDown(KeyCode.S))
             {
@@ -442,6 +456,11 @@ namespace DuelLinksAccess
             if (InputManager.TryConsumeKeyDown(KeyCode.B))
             {
                 OpenAutoBuild();
+                return;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.S))
+            {
+                AnnounceCurrentSkill();
                 return;
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.I))
@@ -1070,12 +1089,79 @@ namespace DuelLinksAccess
                     ScreenReader.Say(Loc.Get("deck_operation_error"));
                     return;
                 }
-                _vc.createFilter();
-                DebugLogger.Log(LogCategory.Handler, "DeckEdit", "createFilter() invoked");
+
+                MelonLogger.Msg("[DeckEdit] OpenFilter invoked");
+
+                if (_vc.filterAndSort == null)
+                {
+                    try { _vc.createFilter(); } catch { }
+                }
+
+                var fs = _vc.filterAndSort;
+                if (fs == null)
+                {
+                    fs = _vc.gameObject?.GetComponentInChildren<FilterAndSort>(true);
+                }
+
+                if (fs != null)
+                {
+                    fs.FilterSettingClicked(true);
+                    ScreenReader.Say("已打开卡片详细筛选");
+                    DebugLogger.Log(LogCategory.Handler, "DeckEdit", "OpenFilter: FilterSettingClicked(true) invoked successfully");
+                }
+                else
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    DebugLogger.Log(LogCategory.Handler, "DeckEdit", "OpenFilter: filterAndSort component is null");
+                }
             }
             catch (Exception ex)
             {
+                MelonLogger.Msg($"[DeckEdit] OpenFilter error: {ex.Message}");
                 DebugLogger.Log(LogCategory.Handler, "DeckEdit", $"OpenFilter error: {ex.Message}");
+                ScreenReader.Say(Loc.Get("deck_operation_error"));
+            }
+        }
+
+        private void OpenSearch()
+        {
+            try
+            {
+                if (_vc == null)
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    return;
+                }
+
+                MelonLogger.Msg("[DeckEdit] OpenSearch invoked");
+
+                if (_vc.filterAndSort == null)
+                {
+                    try { _vc.createFilter(); } catch { }
+                }
+
+                var fs = _vc.filterAndSort;
+                if (fs == null)
+                {
+                    fs = _vc.gameObject?.GetComponentInChildren<FilterAndSort>(true);
+                }
+
+                if (fs != null)
+                {
+                    fs.SearchSettingClicked(true);
+                    ScreenReader.Say("已打开卡片搜索");
+                    DebugLogger.Log(LogCategory.Handler, "DeckEdit", "OpenSearch: SearchSettingClicked(true) invoked successfully");
+                }
+                else
+                {
+                    ScreenReader.Say(Loc.Get("deck_operation_error"));
+                    DebugLogger.Log(LogCategory.Handler, "DeckEdit", "OpenSearch: filterAndSort component is null");
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[DeckEdit] OpenSearch error: {ex.Message}");
+                DebugLogger.Log(LogCategory.Handler, "DeckEdit", $"OpenSearch error: {ex.Message}");
                 ScreenReader.Say(Loc.Get("deck_operation_error"));
             }
         }
@@ -1198,11 +1284,18 @@ namespace DuelLinksAccess
                 Action = OpenDeckMenu
             });
 
-            // 8. Filter / Search
+            // 8. Filter Setting
             _toolbarButtons.Add(new ToolbarItem
             {
                 Name = Loc.Get("deck_btn_filter"),
                 Action = OpenFilter
+            });
+
+            // 9. Card Search
+            _toolbarButtons.Add(new ToolbarItem
+            {
+                Name = Loc.Get("deck_btn_search"),
+                Action = OpenSearch
             });
 
             // 9. Paste Deck Code

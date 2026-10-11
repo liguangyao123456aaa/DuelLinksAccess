@@ -920,7 +920,8 @@ namespace DuelLinksAccess
             try
             {
                 var vc = dialogRoot.GetComponent<
-                    Il2CppYgomGame.Menu.CharaFilterDialogViewController>();
+                    Il2CppYgomGame.Menu.CharaFilterDialogViewController>()
+                    ?? dialogRoot.GetComponentInChildren<Il2CppYgomGame.Menu.CharaFilterDialogViewController>(true);
                 if (vc == null) return;
 
                 // Flatten the dialog's chara data in display order.
@@ -2230,26 +2231,69 @@ namespace DuelLinksAccess
                 if (TryActivateSpecialDialog(item))
                     return;
 
+                // Special case: FilterSettingItem (card filter dialog options: SR, UR, Monster, Trap, etc.)
+                var fsi = item.Go.GetComponent<Il2CppYgomGame.Deck.FilterSettingItem>()
+                    ?? item.Go.GetComponentInParent<Il2CppYgomGame.Deck.FilterSettingItem>()
+                    ?? item.Go.GetComponentInChildren<Il2CppYgomGame.Deck.FilterSettingItem>();
+                if (fsi != null)
+                {
+                    bool newState = !fsi.IsSelected;
+                    fsi.ItemClicked(newState);
+                    string stateText = newState ? "已开启" : "已关闭";
+                    ScreenReader.Say($"{item.Label} {stateText}");
+                    MelonLogger.Msg($"[Dialog] FilterSettingItem toggled: {item.Label} -> {newState}");
+                    _tabRescanDelay = 0.5f;
+                    return;
+                }
+
                 var eventData = new UnityEngine.EventSystems.PointerEventData(
                     UnityEngine.EventSystems.EventSystem.current);
 
-                // Strategy 1: Htjson ButtonWidget — fire full click cycle on its YgomButton
                 bool activated = false;
-                var buttonWidget = item.Go.GetComponentInParent<Il2CppYgomSystem.Htjson.ButtonWidget>();
-                if (buttonWidget != null)
+
+                // Target gameobject for click: either item.Go or its YgomButton
+                GameObject clickTargetGo = item.Go;
+                var buttonWidget = item.Go.GetComponentInParent<Il2CppYgomSystem.Htjson.ButtonWidget>()
+                    ?? item.Go.GetComponentInChildren<Il2CppYgomSystem.Htjson.ButtonWidget>();
+                if (buttonWidget != null && buttonWidget.button != null && buttonWidget.button.gameObject != null)
+                {
+                    clickTargetGo = buttonWidget.button.gameObject;
+                }
+
+                // Strategy 0: Hardware mouse click at authentic UI screen coordinates.
+                // Guarantees native raycast, genuine sound effect (SE), and avoids native Il2Cpp crashes (e.g. replay/log view).
+                // ONLY permitted if coordinates reside within the screen viewport!
+                if (clickTargetGo != null && Main.TryGetUiScreenPos(clickTargetGo, out Vector2 hwClickPos))
+                {
+                    if (hwClickPos.x >= 0 && hwClickPos.x <= Screen.width && hwClickPos.y >= 0 && hwClickPos.y <= Screen.height)
+                    {
+                        MelonLogger.Msg($"[Dialog] Clicking target via hardware mouse at ({hwClickPos.x:F0}, {hwClickPos.y:F0}) on {clickTargetGo.name} for {item.Label}");
+                        if (Main.ClickViaHardwareMouse(hwClickPos, "Dialog-HWClick"))
+                        {
+                            activated = true;
+                        }
+                    }
+                    else
+                    {
+                        MelonLogger.Msg($"[Dialog] Target {clickTargetGo.name} for {item.Label} at ({hwClickPos.x:F0}, {hwClickPos.y:F0}) is outside screen bounds ({Screen.width}x{Screen.height}), skipping hardware mouse");
+                    }
+                }
+
+                // Strategy 1: Htjson ButtonWidget fallback (if hardware click unavailable)
+                if (!activated && buttonWidget != null)
                 {
                     var ygomBtn = buttonWidget.button;
                     if (ygomBtn != null && ygomBtn.gameObject != null
                         && IsControlInteractable(ygomBtn.gameObject))
                     {
-                        MelonLogger.Msg($"[Dialog] Htjson ButtonWidget, clicking YgomButton on {ygomBtn.gameObject.name}");
+                        MelonLogger.Msg($"[Dialog] Htjson ButtonWidget fallback, clicking on {ygomBtn.gameObject.name}");
                         var btnGo = ygomBtn.gameObject;
-                        UnityEngine.EventSystems.ExecuteEvents.Execute(
-                            btnGo, eventData,
-                            UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
-                        UnityEngine.EventSystems.ExecuteEvents.Execute(
-                            btnGo, eventData,
-                            UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
+                        if (Main.TryGetUiScreenPos(btnGo, out Vector2 pos))
+                        {
+                            eventData.position = pos;
+                            eventData.pressPosition = pos;
+                        }
+                        eventData.button = UnityEngine.EventSystems.PointerEventData.InputButton.Left;
                         UnityEngine.EventSystems.ExecuteEvents.Execute(
                             btnGo, eventData,
                             UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
@@ -2342,14 +2386,28 @@ namespace DuelLinksAccess
                         item.Go, eventData,
                         UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
 
+                    // Strategy 4b: Toggle component fallback
+                    var toggleComp = item.Go.GetComponent<Toggle>()
+                        ?? item.Go.GetComponentInParent<Toggle>()
+                        ?? item.Go.GetComponentInChildren<Toggle>();
+                    if (toggleComp != null && toggleComp.interactable)
+                    {
+                        toggleComp.isOn = !toggleComp.isOn;
+                        MelonLogger.Msg($"[Dialog] Toggled Toggle component: {item.Label} -> {toggleComp.isOn}");
+                        activated = true;
+                    }
+
                     // Strategy 5: Hardware mouse coordinate click fallback.
                     // For dialogs blocked by overlays (e.g. InputScreenCover) or native raycasters
                     // where synthetic pointer events fail, simulate genuine Win32 hardware mouse click
-                    // directly at the UI element's screen center.
+                    // directly at the UI element's screen center (ONLY if within viewport!).
                     if (item.Go != null && Main.TryGetUiScreenPos(item.Go, out Vector2 clickPos))
                     {
-                        MelonLogger.Msg($"[Dialog] Simulating hardware mouse click fallback at ({clickPos.x:F0}, {clickPos.y:F0}) for {item.Label}");
-                        Main.ClickViaHardwareMouse(clickPos, "Dialog-Btn-HardwareFallback");
+                        if (clickPos.x >= 0 && clickPos.x <= Screen.width && clickPos.y >= 0 && clickPos.y <= Screen.height)
+                        {
+                            MelonLogger.Msg($"[Dialog] Simulating hardware mouse click fallback at ({clickPos.x:F0}, {clickPos.y:F0}) for {item.Label}");
+                            Main.ClickViaHardwareMouse(clickPos, "Dialog-Btn-HardwareFallback");
+                        }
                     }
                 }
 
@@ -2362,16 +2420,16 @@ namespace DuelLinksAccess
                 }
 
                 // Schedule a post-activation rescan to detect stacked dialogs
-                // (e.g. clicking "Privacy Notice" opens a new dialog on top)
-                _postActivationRescanDelay = 1.5f;
+                // (e.g. clicking "Privacy Notice" or "Filter" opens a new dialog on top)
+                _postActivationRescanDelay = 0.5f;
 
-                // Detect tab button activation — schedule content rescan.
-                // Tab switching doesn't change the VC instance, so the
-                // post-activation stacked-dialog check won't trigger.
-                if (IsTabButton(item.Go))
+                // Detect tab button activation or filter/toggle activation — schedule content rescan.
+                // Tab/filter switching doesn't change the VC instance, so content rescan updates items.
+                if (IsTabButton(item.Go)
+                    || (item.Label != null && (item.Label.Contains("筛选") || item.Label.Contains("Filter") || item.Label.Contains("关闭") || item.Label.Contains("开启"))))
                 {
-                    MelonLogger.Msg($"[Dialog] Tab button activated, scheduling content rescan");
-                    _tabRescanDelay = 1.0f;
+                    MelonLogger.Msg($"[Dialog] Tab/Filter button activated, scheduling content rescan");
+                    _tabRescanDelay = 0.5f;
                 }
             }
             catch (Exception ex)
@@ -2487,6 +2545,38 @@ namespace DuelLinksAccess
                     Il2CppYgomGame.Menu.ConfirmDialogViewController>("dialog");
                 if (confirmVc != null)
                 {
+                    // Helper to trigger genuine game UI button audio and events
+                    Action<GameObject, string> triggerNativeButtonClick = (targetGo, logTag) =>
+                    {
+                        if (targetGo == null) return;
+                        try
+                        {
+                            var ygomBtn = targetGo.GetComponentInParent<Il2CppYgomSystem.UI.YgomButton>()
+                                ?? targetGo.GetComponentInChildren<Il2CppYgomSystem.UI.YgomButton>();
+                            if (ygomBtn != null)
+                            {
+                                try { Il2CppYgomSystem.UI.YgomButton.PlaySE(ygomBtn.seType); } catch { }
+                                var evData = new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current);
+                                try { ygomBtn.OnPointerClick(evData); } catch { }
+                            }
+
+                            var evDataGen = new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current);
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(targetGo, evDataGen, UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(targetGo, evDataGen, UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
+                            UnityEngine.EventSystems.ExecuteEvents.Execute(targetGo, evDataGen, UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+
+                            if (Main.TryGetUiScreenPos(targetGo, out Vector2 cPos))
+                            {
+                                MelonLogger.Msg($"[Dialog] Simulating hardware mouse click for {logTag} at ({cPos.x:F0}, {cPos.y:F0})");
+                                Main.ClickViaHardwareMouse(cPos, "ConfirmDialog-HardwareClick");
+                            }
+                        }
+                        catch (Exception exEv)
+                        {
+                            MelonLogger.Msg($"[Dialog] triggerNativeButtonClick error: {exEv.Message}");
+                        }
+                    };
+
                     if (IsNegativeAction(item.Label, item.Go))
                     {
                         MelonLogger.Msg($"[Dialog] ConfirmDialog: negative action recognized for '{item.Label}', invoking clickNoAction/OnClickedNo");
@@ -2512,14 +2602,7 @@ namespace DuelLinksAccess
                             try { btn.onClick?.Invoke(); } catch { }
                         }
 
-                        try
-                        {
-                            if (confirmVc.gameObject != null && confirmVc.gameObject.activeInHierarchy)
-                            {
-                                confirmVc.SendBack();
-                            }
-                        }
-                        catch { }
+                        triggerNativeButtonClick(item.Go, "No-Button");
 
                         ScreenReader.Say(item.Label);
                         return true;
@@ -2552,14 +2635,7 @@ namespace DuelLinksAccess
                             try { btn.onClick?.Invoke(); } catch { }
                         }
 
-                        try
-                        {
-                            if (confirmVc.gameObject != null && confirmVc.gameObject.activeInHierarchy)
-                            {
-                                confirmVc.SendBack();
-                            }
-                        }
-                        catch { }
+                        triggerNativeButtonClick(item.Go, "Yes-Button");
 
                         ScreenReader.Say(item.Label);
                         return true;
@@ -2576,7 +2652,7 @@ namespace DuelLinksAccess
                                 try { confirmVc.clickNoAction?.Invoke(); } catch { }
                                 try { confirmVc.OnClickedNo(); } catch { }
                                 try { buttons[0].onClick?.Invoke(); } catch { }
-                                try { confirmVc.SendBack(); } catch { }
+                                triggerNativeButtonClick(buttons[0].gameObject, "Ambiguous-No");
                                 ScreenReader.Say(item.Label);
                                 return true;
                             }
@@ -2588,7 +2664,7 @@ namespace DuelLinksAccess
                                 try { confirmVc.clickYesAction?.Invoke(num); } catch { }
                                 try { confirmVc.OnClickedYes(); } catch { }
                                 try { buttons[1].onClick?.Invoke(); } catch { }
-                                try { confirmVc.SendBack(); } catch { }
+                                triggerNativeButtonClick(buttons[1].gameObject, "Ambiguous-Yes");
                                 ScreenReader.Say(item.Label);
                                 return true;
                             }
