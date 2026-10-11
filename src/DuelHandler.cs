@@ -1,4 +1,6 @@
 using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.EventSystems;
 
 namespace DuelLinksAccess
 {
@@ -932,7 +934,10 @@ namespace DuelLinksAccess
                 var worker = client?.worker2d;
                 var dlg = worker?.yesnoDialog;
 
-                if (dlg == null || dlg.content == null || !dlg.content.activeSelf)
+                bool isDlgActive = dlg != null && dlg.gameObject != null && dlg.gameObject.activeInHierarchy
+                    && (dlg.content == null || dlg.content.activeInHierarchy || dlg.content.activeSelf);
+
+                if (!isDlgActive)
                 {
                     // Dialog closed — reset tracking
                     if (_yesNoDialogAnnounced)
@@ -949,28 +954,48 @@ namespace DuelLinksAccess
                 string text = "";
                 try
                 {
-                    text = SpeechTextFormatter.StripRichText(
-                        dlg.dlgText?.text ?? "");
+                    text = SpeechTextFormatter.StripRichText(dlg.dlgText?.text ?? "");
+                    if (string.IsNullOrWhiteSpace(text))
+                    {
+                        text = SpeechTextFormatter.StripRichText(dlg.addText?.text ?? "");
+                    }
+                    if (string.IsNullOrWhiteSpace(text) && dlg.gameObject != null)
+                    {
+                        var texts = dlg.gameObject.GetComponentsInChildren<Text>(true);
+                        if (texts != null)
+                        {
+                            foreach (var t in texts)
+                            {
+                                if (t != null && !string.IsNullOrWhiteSpace(t.text))
+                                {
+                                    string s = SpeechTextFormatter.StripRichText(t.text).Trim();
+                                    if (s.Length > 2 && s != "OK" && s != "Cancel" && s != "Yes" && s != "No")
+                                    {
+                                        text = s;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 catch { }
 
-                if (string.IsNullOrEmpty(text))
+                // Fallback: if dialog is truly active but text isn't parsed yet
+                if (string.IsNullOrWhiteSpace(text))
                 {
                     if (_yesNoDialogAnnounced)
                     {
-                        _yesNoDialogAnnounced = false;
-                        _lastYesNoText = "";
+                        text = _lastYesNoText;
                     }
-                    return false;
+                    else
+                    {
+                        text = Loc.Get("duel_yesno_generic");
+                    }
                 }
 
-                // If the text is the same as what we already responded to, the game
-                // hasn't cleared it yet — don't re-activate. Only activate on NEW text.
-                if (text == _lastYesNoText && !_yesNoDialogAnnounced)
-                    return false;
-
                 // Dialog is active with real text — read if not yet announced
-                if (!_yesNoDialogAnnounced)
+                if (!_yesNoDialogAnnounced || (text != _lastYesNoText && !string.IsNullOrWhiteSpace(text)))
                 {
                     _yesNoDialogAnnounced = true;
                     _lastYesNoText = text;
@@ -986,8 +1011,8 @@ namespace DuelLinksAccess
                     || InputManager.TryConsumeKeyDown(KeyCode.Space))
                 {
                     DebugLogger.Log(LogCategory.Game, "DuelHandler",
-                        "DuelCommonDialog: calling OnButton(0) (Yes)");
-                    dlg.OnButton(0);
+                        "DuelCommonDialog: confirming Yes (button 0)");
+                    TriggerCommonDialogButton(dlg, worker, 0);
                     ScreenReader.Say(Loc.Get("duel_yes"));
                     _yesNoDialogAnnounced = false;
                     _yesNoCooldown = 0.5f;
@@ -998,8 +1023,8 @@ namespace DuelLinksAccess
                 if (InputManager.TryConsumeKeyDown(KeyCode.Escape))
                 {
                     DebugLogger.Log(LogCategory.Game, "DuelHandler",
-                        "DuelCommonDialog: calling OnButton(1) (No)");
-                    dlg.OnButton(1);
+                        "DuelCommonDialog: cancelling No (button 1)");
+                    TriggerCommonDialogButton(dlg, worker, 1);
                     ScreenReader.Say(Loc.Get("duel_no"));
                     _yesNoDialogAnnounced = false;
                     _yesNoCooldown = 0.5f;
@@ -1014,6 +1039,106 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Game, "DuelHandler",
                     $"DuelYesNo error: {ex.Message}");
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Triggers a button on DuelCommonDialog (0 for Yes, 1 for No).
+        /// Dispatches both Unity UI Click events, onYes/onNo delegates, native OnButton, and worker state.
+        /// </summary>
+        private static void TriggerCommonDialogButton(
+            Il2CppYgomGame.Duel.DuelCommonDialog dlg,
+            Il2CppYgomGame.Duel.RunEffectWorker2D worker,
+            int buttonIndex)
+        {
+            if (dlg == null) return;
+
+            // 1. Dispatch actual UI button click event
+            try
+            {
+                var buttons = dlg.gameObject?.GetComponentsInChildren<Button>(false);
+                if (buttons != null && buttons.Count > 0)
+                {
+                    Button target = null;
+                    if (buttonIndex == 0)
+                    {
+                        // Search for Yes/OK/Confirm button
+                        foreach (var b in buttons)
+                        {
+                            if (b == null) continue;
+                            string name = b.name.ToLowerInvariant();
+                            if (name.Contains("yes") || name.Contains("ok") || name.Contains("decide") || name.Contains("confirm"))
+                            {
+                                target = b;
+                                break;
+                            }
+                        }
+                        if (target == null && buttons.Count > 0) target = buttons[0];
+                    }
+                    else
+                    {
+                        // Search for No/Cancel/Back button
+                        foreach (var b in buttons)
+                        {
+                            if (b == null) continue;
+                            string name = b.name.ToLowerInvariant();
+                            if (name.Contains("no") || name.Contains("cancel") || name.Contains("back") || name.Contains("close"))
+                            {
+                                target = b;
+                                break;
+                            }
+                        }
+                        if (target == null && buttons.Count > 1) target = buttons[1];
+                        else if (target == null && buttons.Count > 0) target = buttons[0];
+                    }
+
+                    if (target != null)
+                    {
+                        target.onClick?.Invoke();
+                        ExecuteEvents.Execute(target.gameObject,
+                            new PointerEventData(EventSystem.current),
+                            ExecuteEvents.pointerClickHandler);
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                    $"TriggerCommonDialogButton UI click error: {ex.Message}");
+            }
+
+            // 2. Fire delegates
+            try
+            {
+                if (buttonIndex == 0) dlg.onYes?.Invoke();
+                else dlg.onNo?.Invoke();
+            }
+            catch { }
+
+            // 3. Fire native dialog method
+            try
+            {
+                dlg.OnButton(buttonIndex);
+                if (buttonIndex == 1)
+                {
+                    try { dlg.OnBack(); } catch { }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Game, "DuelHandler",
+                    $"TriggerCommonDialogButton OnButton error: {ex.Message}");
+            }
+
+            // 4. Fallback to Worker2D state machine
+            if (worker != null)
+            {
+                try
+                {
+                    if (buttonIndex == 0) worker.ReturnDialogTrue();
+                    else worker.ReturnDialogFalse();
+                }
+                catch { }
             }
         }
 

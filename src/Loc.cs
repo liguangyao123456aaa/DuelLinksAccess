@@ -222,6 +222,7 @@ namespace DuelLinksAccess
             _english["trader_footer_invalid"] = "该标签页不存在";
             _english["trader_footer_unnamed"] = "标签页 {0}";
             _english["trader_select_failed"] = "无法选择 {0}。请重试。";
+            _english["trader_unknown_item"] = "未知道具";
             _english["map_npc_bonus"] = "奖励决斗者";
             _english["map_school"] = "决斗残局测试";
 

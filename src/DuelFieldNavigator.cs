@@ -3,6 +3,8 @@ using System.Collections;
 using System.Collections.Generic;
 using MelonLoader;
 using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.EventSystems;
 
 namespace DuelLinksAccess
 {
@@ -2968,6 +2970,18 @@ namespace DuelLinksAccess
                 else
                 {
                     emoList.OnDecide();
+                    try
+                    {
+                        var decideBtn = emoList.decideButton;
+                        if (decideBtn != null && decideBtn.gameObject != null && decideBtn.gameObject.activeInHierarchy)
+                        {
+                            decideBtn.onClick?.Invoke();
+                            ExecuteEvents.Execute(decideBtn.gameObject,
+                                new PointerEventData(EventSystem.current),
+                                ExecuteEvents.pointerClickHandler);
+                        }
+                    }
+                    catch { }
                 }
 
                 _emotionalList.IsActive = false;
@@ -3039,10 +3053,58 @@ namespace DuelLinksAccess
             try
             {
                 var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
-                if (emoList != null && emoList.cancelable)
+                if (emoList != null)
                 {
-                    emoList.OnCancel();
-                    ScreenReader.Say(Loc.Get("duel_action_cancelled"));
+                    bool cancelled = false;
+
+                    // 1. Try finding and triggering Cancel/Back/Close buttons via UI EventSystem
+                    try
+                    {
+                        var buttons = emoList.gameObject?.GetComponentsInChildren<Button>(false);
+                        if (buttons != null)
+                        {
+                            foreach (var b in buttons)
+                            {
+                                if (b != null && b.name != null)
+                                {
+                                    string bName = b.name.ToLowerInvariant();
+                                    if (bName.Contains("cancel") || bName.Contains("back") || bName.Contains("close"))
+                                    {
+                                        b.onClick?.Invoke();
+                                        ExecuteEvents.Execute(b.gameObject,
+                                            new PointerEventData(EventSystem.current),
+                                            ExecuteEvents.pointerClickHandler);
+                                        cancelled = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+
+                    // 2. Native OnCancel / OnBack
+                    if (!cancelled)
+                    {
+                        if (emoList.cancelable)
+                        {
+                            emoList.OnCancel();
+                            cancelled = true;
+                        }
+                        else
+                        {
+                            cancelled = emoList.OnBack();
+                        }
+                    }
+
+                    if (cancelled)
+                    {
+                        ScreenReader.Say(Loc.Get("duel_action_cancelled"));
+                    }
+                    else
+                    {
+                        ScreenReader.Say(Loc.Get("duel_cannot_cancel"));
+                    }
                 }
                 else
                 {
@@ -3441,11 +3503,40 @@ namespace DuelLinksAccess
                 var client = Il2CppYgomGame.Duel.DuelClient.instance;
                 var worker = client?.worker2d;
                 var scl = worker?.selectCardLocation;
-                if (scl != null && scl.cancelable)
+                if (scl != null)
                 {
-                    scl.OnCancel();
-                    DebugLogger.Log(LogCategory.Game, "FieldNav",
-                        "CardSelect: cancelled via OnCancel");
+                    // 1. Dispatch UI cancel button click if present
+                    try
+                    {
+                        var buttons = scl.gameObject?.GetComponentsInChildren<Button>(false);
+                        if (buttons != null)
+                        {
+                            foreach (var b in buttons)
+                            {
+                                if (b != null && b.name != null)
+                                {
+                                    string bName = b.name.ToLowerInvariant();
+                                    if (bName.Contains("cancel") || bName.Contains("back") || bName.Contains("close"))
+                                    {
+                                        b.onClick?.Invoke();
+                                        ExecuteEvents.Execute(b.gameObject,
+                                            new PointerEventData(EventSystem.current),
+                                            ExecuteEvents.pointerClickHandler);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+
+                    // 2. Native OnCancel
+                    if (scl.cancelable)
+                    {
+                        scl.OnCancel();
+                        DebugLogger.Log(LogCategory.Game, "FieldNav",
+                            "CardSelect: cancelled via OnCancel");
+                    }
                 }
             }
             catch (Exception ex)
