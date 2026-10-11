@@ -84,13 +84,13 @@ Automatic draw sends the game's normal draw command. Draw-related effects and ac
 ### Home and Duel World
 
 - `Up` / `Down`: browse known destinations
-- `Left` / `Right`: change area, change character in the character panel, or browse specific tasks once focused on Stage Missions
+- `Left` / `Right`: change area, or change character in the character panel
 - `Enter`: activate the current destination
 - `G`: read gem balance
 - `B`: switch between the curated destination list and generic browse-all mode
 
-> **Note on Stage Missions**: To inspect and complete stage missions, locate the stage mission entry using `Up` / `Down`, then use `Left` / `Right` arrows to browse the specific mission tasks.  
-> **（提示：完成关卡任务需要光标找到关卡任务后，按左右光标键才有用。）**
+> **Note on Stage Missions**: To inspect and complete stage missions, locate the stage mission entry using `Up` / `Down`, press `Enter`, then use the `Right` arrow to browse specific tasks.  
+> **（提示：完成关卡任务需要光标找到关卡任务后，先按回车，再按右光标键才有用。）**
 
 Use browse-all mode when a new event or game update adds a control that the curated list does not know yet. Generic items may have weak labels because the game often stores text in sprites.
 
