@@ -2260,26 +2260,7 @@ namespace DuelLinksAccess
                     clickTargetGo = buttonWidget.button.gameObject;
                 }
 
-                // Strategy 0: Hardware mouse click at authentic UI screen coordinates.
-                // Guarantees native raycast, genuine sound effect (SE), and avoids native Il2Cpp crashes (e.g. replay/log view).
-                // ONLY permitted if coordinates reside within the screen viewport!
-                if (clickTargetGo != null && Main.TryGetUiScreenPos(clickTargetGo, out Vector2 hwClickPos))
-                {
-                    if (hwClickPos.x >= 0 && hwClickPos.x <= Screen.width && hwClickPos.y >= 0 && hwClickPos.y <= Screen.height)
-                    {
-                        MelonLogger.Msg($"[Dialog] Clicking target via hardware mouse at ({hwClickPos.x:F0}, {hwClickPos.y:F0}) on {clickTargetGo.name} for {item.Label}");
-                        if (Main.ClickViaHardwareMouse(hwClickPos, "Dialog-HWClick"))
-                        {
-                            activated = true;
-                        }
-                    }
-                    else
-                    {
-                        MelonLogger.Msg($"[Dialog] Target {clickTargetGo.name} for {item.Label} at ({hwClickPos.x:F0}, {hwClickPos.y:F0}) is outside screen bounds ({Screen.width}x{Screen.height}), skipping hardware mouse");
-                    }
-                }
-
-                // Strategy 1: Htjson ButtonWidget fallback (if hardware click unavailable)
+                // Strategy 1: Htjson ButtonWidget (native pointer event cycle)
                 if (!activated && buttonWidget != null)
                 {
                     var ygomBtn = buttonWidget.button;
