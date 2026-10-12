@@ -56,6 +56,7 @@ namespace DuelLinksAccess
         private CardCatalogHandler _cardCatalogHandler;
         private CardTransferHandler _cardTransferHandler;
         private HomeHandler _homeHandler;
+        private CharaGetHandler _charaGetHandler;
 
         // Orphaned TutorialArrow tracking — for arrows on the dialog stack
         // when neither DuelHandler nor DialogHandler is handling them.
@@ -120,6 +121,7 @@ namespace DuelLinksAccess
             // search) back to ScreenButtonHandler via a Tab zone-toggle.
             _cardCatalogHandler.SetScreenButtonHandler(_screenButtonHandler);
             _homeHandler = new HomeHandler();
+            _charaGetHandler = new CharaGetHandler();
         }
 
         private IEnumerator AnnounceStartupDelayed()
@@ -381,6 +383,10 @@ namespace DuelLinksAccess
             // Ticket exchange handler — intercepts CardGetterViewController screens
             _ticketExchangeHandler?.Update();
             if (_ticketExchangeHandler?.IsActive == true) return;
+
+            // Character ticket exchange handler — intercepts CharaGetViewController screens
+            _charaGetHandler?.Update();
+            if (_charaGetHandler?.IsActive == true) return;
 
             // Card Trader handler — intercepts CardTraderViewController2 screens
             _cardTraderHandler?.Update();
