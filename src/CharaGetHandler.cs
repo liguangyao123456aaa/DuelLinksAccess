@@ -13,8 +13,8 @@ namespace DuelLinksAccess
     /// <summary>
     /// 无障碍角色兑换券处理器 (CharaGetHandler)
     /// 专用于处理礼品盒/交换奖券中打开的“角色兑换”界面 (CharaGetViewController)。
-    /// 遵循零硬编码原则，运行时自省动态获取所有角色列表、可兑换状态与详细信息，
-    /// 提供纯键盘方向键网格漫游与一键兑换交互。
+    /// 遵循零硬编码原则，运行时自省动态获取所有可兑换角色列表与详细信息，
+    /// 自动过滤掉无法兑换的无效项，仅呈现可兑换角色，提供纯键盘方向键网格漫游与精准回车兑换。
     /// </summary>
     public class CharaGetHandler
     {
@@ -106,6 +106,16 @@ namespace DuelLinksAccess
             _awaitingDialogResult = false;
             _dialogSeen = false;
 
+            // 尝试激活游戏原生的“仅显示可兑换”筛选，使游戏原生 UI 也与读屏保持一致
+            try
+            {
+                if (_vc != null && !_vc.onlycanget)
+                {
+                    _vc.OnlyCanGetClicked();
+                }
+            }
+            catch { }
+
             DebugLogger.Log(LogCategory.Handler, "CharaGet",
                 $"CharaGetViewController activated (GO={goName}), awaiting initial scan...");
         }
@@ -136,17 +146,10 @@ namespace DuelLinksAccess
 
             _initialScanDone = true;
 
-            int canGetCount = 0;
-            for (int i = 0; i < _characterIds.Count; i++)
-            {
-                if (_canGetSet.Contains(_characterIds[i]))
-                    canGetCount++;
-            }
-
             string title = GetScreenTitle();
             string ticketInfo = GetTicketBalanceText();
             string countMsg = _characterIds.Count > 0
-                ? $"共有 {_characterIds.Count} 位角色（其中 {canGetCount} 位可兑换）。方向键浏览，回车键兑换，F键切换仅看可兑换，Esc返回。"
+                ? $"共有 {_characterIds.Count} 位可兑换角色。方向键浏览，回车键兑换，Esc返回。"
                 : "当前无可兑换角色。";
 
             ScreenReader.Say($"{title}。{ticketInfo}{countMsg}");
@@ -170,7 +173,6 @@ namespace DuelLinksAccess
             _awaitingDialogResult = false;
             _dialogSeen = false;
 
-            int prevCid = (_focusIndex >= 0 && _focusIndex < _characterIds.Count) ? _characterIds[_focusIndex] : -1;
             RefreshCharacterList();
 
             if (_focusIndex >= _characterIds.Count)
@@ -224,7 +226,7 @@ namespace DuelLinksAccess
 
             try
             {
-                // 1. 刷新并加载可兑换集合 (cangetcharas)
+                // 1. 获取官方可兑换集合 (cangetcharas)
                 var canGetList = CharaGetViewController.cangetcharas;
                 if (canGetList != null)
                 {
@@ -234,33 +236,38 @@ namespace DuelLinksAccess
                     }
                 }
 
-                // 2. 获取当前筛选后的所有角色 ID (GetFilteredCharalist)
-                var filtered = _vc.GetFilteredCharalist();
-                if (filtered != null && filtered.Count > 0)
+                // 2. 严格只添加真正“可兑换”的角色
+                // 如果官方提供了 cangetcharas 列表，直接以此为准
+                if (canGetList != null && canGetList.Count > 0)
                 {
-                    for (int i = 0; i < filtered.Count; i++)
+                    for (int i = 0; i < canGetList.Count; i++)
                     {
-                        _characterIds.Add(filtered[i]);
+                        int cid = canGetList[i];
+                        if (!_characterIds.Contains(cid))
+                        {
+                            _characterIds.Add(cid);
+                        }
                     }
                 }
-                else if (_vc.charas != null && _vc.charas.Count > 0)
+                else
                 {
-                    // 降级兜底：从 charas 字典中自省获取每个系列的角色列表
-                    foreach (var pair in _vc.charas)
+                    // 降级兜底：从当前所有角色中，逐一比对 CanGet
+                    var filtered = _vc.GetFilteredCharalist();
+                    if (filtered != null)
                     {
-                        var sList = pair.Value;
-                        if (sList != null)
+                        for (int i = 0; i < filtered.Count; i++)
                         {
-                            for (int i = 0; i < sList.Count; i++)
+                            int cid = filtered[i];
+                            if (IsCharacterCanGet(cid) && !_characterIds.Contains(cid))
                             {
-                                _characterIds.Add(sList[i]);
+                                _characterIds.Add(cid);
                             }
                         }
                     }
                 }
 
                 DebugLogger.Log(LogCategory.Handler, "CharaGet",
-                    $"Refreshed: {_characterIds.Count} characters, {_canGetSet.Count} can-get items.");
+                    $"Filtered to {_characterIds.Count} obtainable characters.");
             }
             catch (Exception ex)
             {
@@ -290,15 +297,17 @@ namespace DuelLinksAccess
                 return;
             }
 
-            // 上下方向键：按行跨列移动
+            // 上下方向键：按列跨步（若项数较少，则单步循环或跨列移动）
             if (InputManager.TryConsumeKeyDown(KeyCode.UpArrow))
             {
-                NavigateBy(-colNum);
+                int step = _characterIds.Count <= colNum ? 1 : colNum;
+                NavigateBy(-step);
                 return;
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.DownArrow))
             {
-                NavigateBy(colNum);
+                int step = _characterIds.Count <= colNum ? 1 : colNum;
+                NavigateBy(step);
                 return;
             }
 
@@ -338,13 +347,6 @@ namespace DuelLinksAccess
                 return;
             }
 
-            // F：切换“仅显示可兑换”筛选
-            if (InputManager.TryConsumeKeyDown(KeyCode.F))
-            {
-                ToggleOnlyCanGet();
-                return;
-            }
-
             // Escape：返回上一层
             if (InputManager.TryConsumeKeyDown(KeyCode.Escape))
             {
@@ -367,33 +369,6 @@ namespace DuelLinksAccess
             }
         }
 
-        private void ToggleOnlyCanGet()
-        {
-            if (_vc == null) return;
-
-            try
-            {
-                _vc.OnlyCanGetClicked();
-                RefreshCharacterList();
-                _focusIndex = 0;
-                SyncScrollView();
-
-                bool only = _vc.onlycanget;
-                string state = only ? "已开启仅显示可兑换" : "已显示全部角色";
-                ScreenReader.Say($"{state}，当前共有 {_characterIds.Count} 位角色。");
-
-                if (_characterIds.Count > 0)
-                {
-                    AnnounceCurrentCharacter(queued: true);
-                }
-                _operationCooldown = OperationCooldownTime;
-            }
-            catch (Exception ex)
-            {
-                DebugLogger.Log(LogCategory.Handler, "CharaGet", $"ToggleOnlyCanGet error: {ex.Message}");
-            }
-        }
-
         private void SelectCurrentCharacter()
         {
             if (_characterIds.Count == 0 || _focusIndex < 0 || _focusIndex >= _characterIds.Count)
@@ -401,23 +376,28 @@ namespace DuelLinksAccess
 
             int cid = _characterIds[_focusIndex];
             string charaName = ResolveCharacterName(cid);
-            bool canGet = IsCharacterCanGet(cid);
-
-            if (!canGet)
-            {
-                ScreenReader.Say($"{charaName} 已经拥有，无法使用兑换券再次兑换。");
-                _operationCooldown = OperationCooldownTime;
-                return;
-            }
 
             try
             {
                 int colNum = GetColumnNum();
-                int targetRow = _focusIndex / colNum;
-                int targetCol = _focusIndex % colNum;
 
-                // 优先通过活动行派发点击
-                bool clicked = TriggerRowClick(targetRow, targetCol, cid);
+                // 计算在游戏底层真实网格中的位置
+                int gridIndex = _focusIndex;
+                var fullList = _vc?.GetFilteredCharalist();
+                if (fullList != null)
+                {
+                    int idx = fullList.IndexOf(cid);
+                    if (idx >= 0) gridIndex = idx;
+                }
+
+                int targetRow = gridIndex / colNum;
+                int targetCol = gridIndex % colNum;
+
+                // 同步滚动条使目标行进入视口
+                SyncScrollViewByRow(targetRow, fullList?.Count ?? _characterIds.Count, colNum);
+
+                // 触发对应按钮的点击
+                bool clicked = TriggerRowClick(targetRow, targetCol);
                 if (clicked)
                 {
                     _awaitingDialogResult = true;
@@ -425,17 +405,6 @@ namespace DuelLinksAccess
                     _operationCooldown = OperationCooldownTime;
                     DebugLogger.Log(LogCategory.Handler, "CharaGet",
                         $"Clicked character '{charaName}' (cid={cid}) at row {targetRow}, col {targetCol}");
-                    return;
-                }
-
-                // 备选方案：如果行尚未完全渲染，强制滚动到位后重试
-                SyncScrollView();
-                clicked = TriggerRowClick(targetRow, targetCol, cid);
-                if (clicked)
-                {
-                    _awaitingDialogResult = true;
-                    _dialogSeen = false;
-                    _operationCooldown = OperationCooldownTime;
                     return;
                 }
 
@@ -449,29 +418,46 @@ namespace DuelLinksAccess
             }
         }
 
-        private bool TriggerRowClick(int targetRow, int targetCol, int expectedCid)
+        private bool TriggerRowClick(int targetRow, int targetCol)
         {
             if (_vc == null) return false;
 
             try
             {
-                var rows = _vc.GetComponentsInChildren<CharaGetFilterRow>(false);
-                if (rows == null || rows.Length == 0) return false;
+                CharaGetFilterRow targetRowComp = null;
 
-                // 寻找包含目标位置或按钮的行
-                foreach (var row in rows)
+                // 1. 尝试直接从 contentRoot 子物体中按行索引获取
+                if (_vc.contentRoot != null && targetRow < _vc.contentRoot.childCount)
                 {
-                    if (row == null || row.buttons == null) continue;
+                    targetRowComp = _vc.contentRoot.GetChild(targetRow)?.GetComponent<CharaGetFilterRow>();
+                }
 
-                    if (targetCol >= 0 && targetCol < row.buttons.Length)
+                // 2. 备选方案：按 SiblingIndex 排序获取
+                if (targetRowComp == null)
+                {
+                    var rows = _vc.GetComponentsInChildren<CharaGetFilterRow>(false);
+                    if (rows != null && rows.Length > 0)
                     {
-                        var btn = row.buttons[targetCol];
+                        var rowList = new List<CharaGetFilterRow>();
+                        for (int i = 0; i < rows.Length; i++)
+                        {
+                            if (rows[i] != null) rowList.Add(rows[i]);
+                        }
+                        rowList.Sort((a, b) => a.transform.GetSiblingIndex().CompareTo(b.transform.GetSiblingIndex()));
+                        if (targetRow >= 0 && targetRow < rowList.Count)
+                            targetRowComp = rowList[targetRow];
+                    }
+                }
+
+                if (targetRowComp != null && targetRowComp.buttons != null)
+                {
+                    if (targetCol >= 0 && targetCol < targetRowComp.buttons.Length)
+                    {
+                        var btn = targetRowComp.buttons[targetCol];
                         if (btn != null && btn.gameObject != null && btn.gameObject.activeInHierarchy)
                         {
-                            // 优先调用 Button.onClick
                             btn.onClick?.Invoke();
 
-                            // 补发原生 PointerClick 事件确保底层监听器捕获
                             var eventData = new PointerEventData(EventSystem.current)
                             {
                                 button = PointerEventData.InputButton.Left
@@ -494,14 +480,29 @@ namespace DuelLinksAccess
         {
             if (_vc == null || _vc.scrollRect == null || _characterIds.Count == 0) return;
 
+            int colNum = GetColumnNum();
+            int gridIndex = _focusIndex;
+            var fullList = _vc?.GetFilteredCharalist();
+            if (fullList != null && _focusIndex < _characterIds.Count)
+            {
+                int idx = fullList.IndexOf(_characterIds[_focusIndex]);
+                if (idx >= 0) gridIndex = idx;
+            }
+
+            int targetRow = gridIndex / colNum;
+            SyncScrollViewByRow(targetRow, fullList?.Count ?? _characterIds.Count, colNum);
+        }
+
+        private void SyncScrollViewByRow(int targetRow, int totalCount, int colNum)
+        {
+            if (_vc == null || _vc.scrollRect == null || totalCount == 0) return;
+
             try
             {
-                int colNum = GetColumnNum();
-                int totalRows = Mathf.CeilToInt((float)_characterIds.Count / colNum);
+                int totalRows = Mathf.CeilToInt((float)totalCount / colNum);
                 if (totalRows <= 1) return;
 
-                int currentRow = _focusIndex / colNum;
-                float norm = 1f - (float)currentRow / (totalRows - 1);
+                float norm = 1f - (float)targetRow / (totalRows - 1);
                 _vc.scrollRect.verticalNormalizedPosition = Mathf.Clamp01(norm);
             }
             catch { }
@@ -547,13 +548,10 @@ namespace DuelLinksAccess
 
             int cid = _characterIds[_focusIndex];
             string charaName = ResolveCharacterName(cid);
-            bool canGet = IsCharacterCanGet(cid);
-            string statusText = canGet ? "可兑换" : "已拥有";
-
             int pos = _focusIndex + 1;
             int total = _characterIds.Count;
 
-            string announcement = $"{charaName}，{statusText}，第 {pos} 项，共 {total} 项";
+            string announcement = $"{charaName}，可兑换，第 {pos} 项，共 {total} 项";
 
             if (queued)
                 ScreenReader.SayQueued(announcement);
@@ -567,7 +565,6 @@ namespace DuelLinksAccess
 
             try
             {
-                // 调用原生静态自省方法
                 int status = CharaGetViewController.CanGet(cid);
                 return status == 1;
             }
@@ -581,17 +578,14 @@ namespace DuelLinksAccess
         {
             try
             {
-                // 1. 优先获取带作品/世界归属的完整名称（如：游城十代 (GX)）
                 string nameWithSeries = CharaUtil.GetNameWithSeries(cid);
                 if (!string.IsNullOrWhiteSpace(nameWithSeries))
                     return nameWithSeries;
 
-                // 2. 备选：原生名称
                 string name = CharaUtil.GetName(cid);
                 if (!string.IsNullOrWhiteSpace(name))
                     return name;
 
-                // 3. 模组通用 LabelExtractor
                 string extName = LabelExtractor.ResolveCharaName(cid);
                 if (!string.IsNullOrWhiteSpace(extName))
                     return extName;
@@ -623,7 +617,6 @@ namespace DuelLinksAccess
                     return $"{_vc.infoText.text.Trim()}。";
                 }
 
-                // 嗅探当前页面所有 Text 组件中包含“持有”或“兑换券”的文本
                 var texts = _vc?.GetComponentsInChildren<Text>(true);
                 if (texts != null)
                 {
