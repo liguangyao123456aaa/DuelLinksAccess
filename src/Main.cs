@@ -271,8 +271,35 @@ namespace DuelLinksAccess
                 return true;
             }
 
+            // Ctrl+Shift+E = Export master card database (all 12,000+ cards)
+            if (IsControlHeld() && IsShiftHeld() && InputManager.TryConsumeKeyDown(KeyCode.E))
+            {
+#pragma warning disable CA1416
+                CardExporter.ExportMasterCards();
+#pragma warning restore CA1416
+                return true;
+            }
+
+            // Ctrl+Shift+D = Export all user-saved character decks
+            if (IsControlHeld() && IsShiftHeld() && InputManager.TryConsumeKeyDown(KeyCode.D))
+            {
+#pragma warning disable CA1416
+                CardExporter.ExportAllUserDecks();
+#pragma warning restore CA1416
+                return true;
+            }
+
+            // Ctrl+Shift+R = Export all official structure decks & game recipes
+            if (IsControlHeld() && IsShiftHeld() && InputManager.TryConsumeKeyDown(KeyCode.R))
+            {
+#pragma warning disable CA1416
+                CardExporter.ExportAllGameRecipes();
+#pragma warning restore CA1416
+                return true;
+            }
+
             // Ctrl+E or F8 = Export all owned cards and effects to text file
-            if ((IsControlHeld() && InputManager.TryConsumeKeyDown(KeyCode.E)) || InputManager.TryConsumeKeyDown(KeyCode.F8))
+            if ((IsControlHeld() && !IsShiftHeld() && InputManager.TryConsumeKeyDown(KeyCode.E)) || InputManager.TryConsumeKeyDown(KeyCode.F8))
             {
 #pragma warning disable CA1416
                 CardExporter.ExportOwnedCards();
@@ -333,6 +360,12 @@ namespace DuelLinksAccess
         {
             return Input.GetKey(KeyCode.LeftControl)
                 || Input.GetKey(KeyCode.RightControl);
+        }
+
+        private static bool IsShiftHeld()
+        {
+            return Input.GetKey(KeyCode.LeftShift)
+                || Input.GetKey(KeyCode.RightShift);
         }
 
         #endregion
