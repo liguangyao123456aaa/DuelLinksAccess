@@ -220,31 +220,72 @@ namespace DuelLinksAccess
                 // Resolve through zone-specific sources before engine fallback.
                 if (IsStackZone(locate))
                 {
-                    if (locate == LocateExtra
-                        && TryGetLiveExtraDeckCard(
-                            player, slot, out CardSnapshot? liveExtra))
+                    if (locate == LocateExtra)
                     {
-                        return liveExtra;
+                        // 1. Authoritative Engine Query (Single-player / live engine)
+                        if (!IsEngineHollow)
+                        {
+                            int uid = 0;
+                            try { uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(player, locate, slot); }
+                            catch { }
+                            if (uid > 0)
+                            {
+                                var byUid = FindCardRootByUid(uid);
+                                if (byUid != null && byUid.cardId > 0)
+                                    return MakeSnapshot(byUid, isFaceUp: true);
+                                var snap = MakeContentSnapshot(uid);
+                                if (snap.HasValue && snap.Value.CardDbId > 0)
+                                    return snap;
+                            }
+                        }
+
+                        // 2. Registered Deck Array (PvP local player initialization - exact deck contents & order)
+                        var fromDeck = GetRegisteredDeckCard(player, locate, slot);
+                        if (fromDeck.HasValue && fromDeck.Value.CardDbId > 0)
+                            return fromDeck;
+
+                        // 3. Live 3D stack fallback (only if valid card snapshot resolved)
+                        if (TryGetLiveExtraDeckCard(player, slot, out CardSnapshot? liveExtra)
+                            && liveExtra.HasValue && liveExtra.Value.CardDbId > 0)
+                        {
+                            return liveExtra;
+                        }
+
+                        // 4. General engine fallback (in case IsEngineHollow was true but engine still has UID)
+                        int fallbackUid = 0;
+                        try { fallbackUid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(player, locate, slot); }
+                        catch { }
+                        if (fallbackUid > 0)
+                        {
+                            var byUid = FindCardRootByUid(fallbackUid);
+                            if (byUid != null && byUid.cardId > 0)
+                                return MakeSnapshot(byUid, isFaceUp: true);
+                            var snap = MakeContentSnapshot(fallbackUid);
+                            if (snap.HasValue && snap.Value.CardDbId > 0)
+                                return snap;
+                        }
+
+                        return null;
                     }
 
-                    // Before a live Extra Deck stack is loaded, registered-deck
+                    // Before a live stack is loaded, registered-deck
                     // data supplies its initial local-player contents. Privacy
                     // is enforced inside GetRegisteredDeckCard.
-                    var fromDeck = GetRegisteredDeckCard(player, locate, slot);
-                    if (fromDeck.HasValue) return fromDeck;
+                    var fromDeckNonExtra = GetRegisteredDeckCard(player, locate, slot);
+                    if (fromDeckNonExtra.HasValue) return fromDeckNonExtra;
 
-                    int uid = 0;
-                    try { uid = Il2CppYgomGame.Duel.Engine
+                    int uidNonExtra = 0;
+                    try { uidNonExtra = Il2CppYgomGame.Duel.Engine
                         .DLL_DuelGetCardUniqueID(player, locate, slot); }
                     catch { }
-                    if (uid > 0)
+                    if (uidNonExtra > 0)
                     {
-                        var byUid = FindCardRootByUid(uid);
+                        var byUid = FindCardRootByUid(uidNonExtra);
                         if (byUid != null) return MakeSnapshot(byUid, isFaceUp: true);
                         // Engine knows the card but no CardRoot exists — build
                         // a snapshot from the Content database. Common for Extra
                         // Deck cards the game hasn't materialized as 3D objects.
-                        return MakeContentSnapshot(uid);
+                        return MakeContentSnapshot(uidNonExtra);
                     }
 
                     // PvP fallback when the registered-deck array path didn't
@@ -433,8 +474,20 @@ namespace DuelLinksAccess
         {
             if (locate == LocateHand) return GetHandSize(player);
 
+            // In live engine / single-player, DLL_DuelGetCardNum is authoritative
+            if (!IsEngineHollow)
+            {
+                try
+                {
+                    int engineCount = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardNum(player, locate);
+                    if (engineCount >= 0) return engineCount;
+                }
+                catch { }
+            }
+
             if (locate == LocateExtra
-                && TryGetLiveExtraDeckCount(player, out int liveExtraCount))
+                && TryGetLiveExtraDeckCount(player, out int liveExtraCount)
+                && liveExtraCount > 0)
             {
                 return liveExtraCount;
             }
@@ -447,10 +500,10 @@ namespace DuelLinksAccess
                 if (registered > 0) return registered;
             }
 
-            int engineCount = 0;
-            try { engineCount = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardNum(player, locate); }
+            int fallbackEngine = 0;
+            try { fallbackEngine = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardNum(player, locate); }
             catch { }
-            if (engineCount > 0) return engineCount;
+            if (fallbackEngine > 0) return fallbackEngine;
 
             // Per-half-field DeckCardPlace fallback. In PvP the engine hollows
             // out DLL_DuelGetCardNum for every locate including extra deck,
@@ -603,8 +656,15 @@ namespace DuelLinksAccess
                     player, MyPlayerNum())) return true;
 
                 if (slot < cards.Count && cards[slot] != null)
-                    card = MakeSnapshot(cards[slot], isFaceUp: true);
-                return true;
+                {
+                    var snap = MakeSnapshot(cards[slot], isFaceUp: true);
+                    if (snap.CardDbId > 0)
+                    {
+                        card = snap;
+                        return true;
+                    }
+                }
+                return false;
             }
             catch { return false; }
         }

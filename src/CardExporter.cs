@@ -197,7 +197,7 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// [Ctrl+Shift+R] Exports all official structure decks, rental decks, starter decks, and recipes.
+        /// [Ctrl+Shift+T] Exports all official structure decks, rental decks, starter decks, and recipes.
         /// </summary>
         public static void ExportAllGameRecipes()
         {

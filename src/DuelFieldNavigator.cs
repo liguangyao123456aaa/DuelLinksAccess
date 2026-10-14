@@ -1095,6 +1095,11 @@ namespace DuelLinksAccess
                 bool isMyCard = player == PlayerMe;
                 bool isFieldCard = IsFieldSlotZone(_currentZone);
 
+                if (isExtra)
+                {
+                    MelonLoader.MelonLogger.Msg($"[FieldNav] Extra Deck NavIndex={_navIndex}/{_zoneSlots.Count}: slotIndex={slotIndex}, cardDbId={cardDbId}, name={cardName}");
+                }
+
                 // EMZ is shared — annotate the name with "opponent's" when the
                 // slot's resolved owner is the opponent, so the user knows whose
                 // card they're on (the zone name itself is neutral).
@@ -1161,20 +1166,32 @@ namespace DuelLinksAccess
                         parts.Add(stats);
                 }
 
-                // Position header: "1 of 3: Blue-Eyes White Dragon" for
-                // navigation reads. For verbose (V key) the user is
-                // re-reading the same card they already navigated to, so
-                // the "X of Y" prefix is redundant noise — drop it.
-                string header = verbose
-                    ? cardName
-                    : Loc.Get("duel_card_position",
-                        _navIndex + 1, _zoneSlots.Count, cardName);
+                string announcement;
+                if (isContentView && cardDbId > 0)
+                {
+                    string cardContentText = CardFormatter.FormatCompact((int)cardDbId);
+                    announcement = verbose
+                        ? cardContentText
+                        : Loc.Get("duel_card_position",
+                            _navIndex + 1, _zoneSlots.Count, cardContentText);
+                }
+                else
+                {
+                    // Position header: "1 of 3: Blue-Eyes White Dragon" for
+                    // navigation reads. For verbose (V key) the user is
+                    // re-reading the same card they already navigated to, so
+                    // the "X of Y" prefix is redundant noise — drop it.
+                    string header = verbose
+                        ? cardName
+                        : Loc.Get("duel_card_position",
+                            _navIndex + 1, _zoneSlots.Count, cardName);
 
-                // Combine header with detail parts
-                string details = parts.Count > 0 ? string.Join(", ", parts) : "";
-                string announcement = details.Length > 0
-                    ? $"{header}. {details}"
-                    : header;
+                    // Combine header with detail parts
+                    string details = parts.Count > 0 ? string.Join(", ", parts) : "";
+                    announcement = details.Length > 0
+                        ? $"{header}. {details}"
+                        : header;
+                }
 
                 // Verbose: show card type, description, and available commands
                 if (verbose)
@@ -1185,26 +1202,29 @@ namespace DuelLinksAccess
                         if (content != null)
                         {
                             int mrk = (int)cardDbId;
-                            var kind = content.GetKind(mrk);
 
-                            // Show card type (spell/trap with icon, or monster kind)
-                            string kindText = content.GetKindText(kind);
-                            if (kind == Il2CppYgomGame.Card.Content.Kind.Magic
-                                || kind == Il2CppYgomGame.Card.Content.Kind.Trap)
+                            // Show card type (spell/trap with icon, or monster kind) if not already included in FormatCompact
+                            if (!isContentView || cardDbId == 0)
                             {
-                                var icon = content.GetIcon(mrk);
-                                if (icon != Il2CppYgomGame.Card.Content.Icon.Null)
-                                    announcement += ". " + content.GetIconText(icon) + " " + kindText;
+                                var kind = content.GetKind(mrk);
+                                string kindText = content.GetKindText(kind);
+                                if (kind == Il2CppYgomGame.Card.Content.Kind.Magic
+                                    || kind == Il2CppYgomGame.Card.Content.Kind.Trap)
+                                {
+                                    var icon = content.GetIcon(mrk);
+                                    if (icon != Il2CppYgomGame.Card.Content.Icon.Null)
+                                        announcement += ". " + content.GetIconText(icon) + " " + kindText;
+                                    else
+                                        announcement += ". " + kindText;
+                                }
                                 else
-                                    announcement += ". " + kindText;
-                            }
-                            else
-                            {
-                                var attr = content.GetAttr(mrk);
-                                var type = content.GetType(mrk);
-                                announcement += ". " + content.GetAttributeText(attr)
-                                    + " " + content.GetTypeText(type)
-                                    + " " + kindText;
+                                {
+                                    var attr = content.GetAttr(mrk);
+                                    var type = content.GetType(mrk);
+                                    announcement += ". " + content.GetAttributeText(attr)
+                                        + " " + content.GetTypeText(type)
+                                        + " " + kindText;
+                                }
                             }
 
                             string desc = content.GetDesc(mrk);

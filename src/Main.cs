@@ -289,14 +289,6 @@ namespace DuelLinksAccess
                 return true;
             }
 
-            // Ctrl+Shift+R = Export all official structure decks & game recipes
-            if (IsControlHeld() && IsShiftHeld() && InputManager.TryConsumeKeyDown(KeyCode.R))
-            {
-#pragma warning disable CA1416
-                CardExporter.ExportAllGameRecipes();
-#pragma warning restore CA1416
-                return true;
-            }
 
             // Ctrl+E or F8 = Export all owned cards and effects to text file
             if ((IsControlHeld() && !IsShiftHeld() && InputManager.TryConsumeKeyDown(KeyCode.E)) || InputManager.TryConsumeKeyDown(KeyCode.F8))

@@ -316,6 +316,8 @@ namespace DuelLinksAccess
                 // Character list / filter dialog: replace the bare "LV: 23"
                 // cell labels with character names resolved from the VC's data
                 ApplyCharaFilterLabels(dialogRoot);
+                ApplyDoubleCharaFilterLabels(dialogRoot);
+                ApplyPullDownLabels(dialogRoot);
 
                 // Deck accessory dialogs (sleeve / mat / ace card): name the
                 // image-only grid cells and preview buttons from the VC data
@@ -915,6 +917,69 @@ namespace DuelLinksAccess
         /// relabel the cell items "name, LV: n". Trailing cells beyond the
         /// data are empty grid fillers and get removed.
         /// </summary>
+        /// <summary>
+        /// 软编码获取决斗世界/Series显示名称（零硬编码，支持游戏原生全部世代及未来扩展）
+        /// </summary>
+        private static string ResolveSeriesDisplayName(int seriesId)
+        {
+            try
+            {
+                var sidEnum = (Il2CppYgomGame.Utility.CharaUtil.SeriesID)seriesId;
+                string dName = Il2CppYgomGame.Utility.SeriesIDExtend.GetDisplayName(sidEnum);
+                if (!string.IsNullOrWhiteSpace(dName)) return dName.Trim();
+                string sName = Il2CppYgomGame.Utility.SeriesIDExtend.GetSeriesName(sidEnum);
+                if (!string.IsNullOrWhiteSpace(sName)) return sName.Trim();
+            }
+            catch { }
+
+            return $"世界 {seriesId}";
+        }
+
+        /// <summary>
+        /// 下拉菜单对话框 (PullDownViewController)：
+        /// 深度提取下拉选项内部的真实文本标签（如“无筛选”、“游戏王 DM”、“游戏王 DSOD”、“游戏王 GX”等），
+        /// 消除原本由于图片克隆体导致的“条目 3”无意义朗读。
+        /// </summary>
+        private void ApplyPullDownLabels(GameObject dialogRoot)
+        {
+            try
+            {
+                var pdVc = dialogRoot.GetComponent<Il2CppYgomGame.Menu.PullDownViewController>()
+                    ?? dialogRoot.GetComponentInChildren<Il2CppYgomGame.Menu.PullDownViewController>(true);
+                if (pdVc == null) return;
+
+                foreach (var item in _items)
+                {
+                    if (item.Go == null) continue;
+                    if (string.IsNullOrWhiteSpace(item.Label) || item.Label.StartsWith("条目") || item.Label.StartsWith("Item") || item.Label == "Button")
+                    {
+                        var texts = item.Go.GetComponentsInChildren<Text>(true);
+                        foreach (var t in texts)
+                        {
+                            if (t != null && !string.IsNullOrWhiteSpace(t.text))
+                            {
+                                string clean = LabelExtractor.StripRichText(t.text).Trim();
+                                if (!string.IsNullOrWhiteSpace(clean) && !clean.StartsWith("条目") && !clean.StartsWith("Item"))
+                                {
+                                    item.Label = clean;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ApplyPullDownLabels error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 角色筛选/选择对话框 (CharaFilterDialogViewController)：
+        /// 直接调用游戏官方原生 GetCurrentCharaList() 权威数据源，
+        /// 彻底根除因手动下标映射偏移导致的“世界错配与角色错位”问题。
+        /// </summary>
         private void ApplyCharaFilterLabels(GameObject dialogRoot)
         {
             try
@@ -924,23 +989,37 @@ namespace DuelLinksAccess
                     ?? dialogRoot.GetComponentInChildren<Il2CppYgomGame.Menu.CharaFilterDialogViewController>(true);
                 if (vc == null) return;
 
-                // Flatten the dialog's chara data in display order.
-                var cids = new List<int>();
-                var actives = vc.activeSeries;
-                var charas = vc.charas;
-                if (actives == null || charas == null) return;
-                for (int i = 0; i < actives.Count; i++)
+                // 1. 查找界面原生的世界下拉选择按钮 (PullDown)，注入清晰的世界提示
+                var pdItem = _items.FirstOrDefault(it => it.Go != null &&
+                    (it.Go.name.Contains("PullDown") || (vc.seriesRoot != null && it.Go.transform.IsChildOf(vc.seriesRoot.transform))));
+                if (pdItem != null)
                 {
-                    if (charas.TryGetValue(actives[i], out var list) && list != null)
+                    string curText = pdItem.Label;
+                    if (!curText.Contains("世界"))
                     {
-                        for (int j = 0; j < list.Count; j++)
-                            cids.Add(list[j]);
+                        pdItem.Label = $"决斗世界：{curText} (按回车展开选择)";
                     }
                 }
+
+                // 2. 官方原生权威接口获取当前筛选下的真实角色 ID 列表（100% 软编码、零偏移）
+                var cids = new List<int>();
+                try
+                {
+                    var nativeList = vc.GetCurrentCharaList();
+                    if (nativeList != null)
+                    {
+                        for (int i = 0; i < nativeList.Count; i++)
+                            cids.Add(nativeList[i]);
+                    }
+                }
+                catch (Exception exNative)
+                {
+                    MelonLogger.Msg($"[Dialog] GetCurrentCharaList error: {exNative.Message}");
+                }
+
                 if (cids.Count == 0) return;
 
-                // Rows sit under contentRoot in sibling order; each row's
-                // buttons[] are the cells, filled left to right.
+                // 3. 将当前世界的网格单元格一一精准对应
                 var content = vc.contentRoot;
                 if (content == null) return;
 
@@ -971,7 +1050,6 @@ namespace DuelLinksAccess
 
                         if (flat >= cids.Count)
                         {
-                            // Grid filler after the last real character.
                             if (itemIdx >= 0) fillerCells.Add(go);
                             continue;
                         }
@@ -993,30 +1071,155 @@ namespace DuelLinksAccess
 
                         _items[itemIdx].Label = string.IsNullOrWhiteSpace(lv)
                             ? name : $"{name}, {lv.Trim()}";
+
+                        int targetCid = cid;
+                        var origAction = _items[itemIdx].CustomAction;
+                        _items[itemIdx].CustomAction = () =>
+                        {
+                            if (origAction != null) origAction();
+                            try { vc.OnClickIcon(targetCid); } catch { }
+                        };
+
                         DebugLogger.Log(LogCategory.Handler, "Dialog",
-                            $"CharaFilter cell {flat - 1}: cid={cid} -> " +
-                            $"\"{_items[itemIdx].Label}\"");
+                            $"CharaFilter cell {flat - 1}: cid={cid} -> \"{_items[itemIdx].Label}\"");
                     }
                 }
 
                 if (fillerCells.Count > 0)
                     _items.RemoveAll(it => fillerCells.Contains(it.Go));
-
-                if (flat < cids.Count)
-                {
-                    // More characters than instantiated cells — the scroll
-                    // view recycles rows. Off-screen entries are unreachable
-                    // for now; log so the limitation is visible in reports.
-                    DebugLogger.Log(LogCategory.Handler, "Dialog",
-                        $"CharaFilter: {cids.Count - flat} of {cids.Count} " +
-                        $"charas beyond the instantiated rows");
-                }
             }
             catch (Exception ex)
             {
                 MelonLogger.Msg($"[Dialog] ApplyCharaFilterLabels error: {ex.Message}");
             }
         }
+
+        /// <summary>
+        /// 双重角色筛选/选择对话框 (DoubleCharaFilterDialogViewController)：
+        /// 专用于传送门、技能选择与双向角色对决等复杂场景，调用原生 GetTopCharaList() 权威数据。
+        /// </summary>
+        private void ApplyDoubleCharaFilterLabels(GameObject dialogRoot)
+        {
+            try
+            {
+                var vc = dialogRoot.GetComponent<
+                    Il2CppYgomGame.Menu.DoubleCharaFilterDialogViewController>()
+                    ?? dialogRoot.GetComponentInChildren<Il2CppYgomGame.Menu.DoubleCharaFilterDialogViewController>(true);
+                if (vc == null) return;
+
+                // 1. 查找并优化原生下拉按钮 (PullDown)
+                var pdItem = _items.FirstOrDefault(it => it.Go != null && it.Go.name.Contains("PullDown"));
+                if (pdItem != null && !pdItem.Label.Contains("世界"))
+                {
+                    pdItem.Label = $"决斗世界：{pdItem.Label} (按回车展开选择)";
+                }
+
+                // 2. 官方原生权威接口获取当前世界下的角色 ID 列表
+                var cids = new List<int>();
+                try
+                {
+                    var nativeList = vc.GetTopCharaList();
+                    if (nativeList != null)
+                    {
+                        for (int i = 0; i < nativeList.Count; i++)
+                            cids.Add(nativeList[i]);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Msg($"[Dialog] GetTopCharaList error: {ex.Message}");
+                }
+
+                if (cids.Count == 0) return;
+
+                // 3. 扫描 topRows 或 contentRoot 下的 DoubleCharaFilterRow
+                var rows = new List<Il2CppYgomGame.Menu.DoubleCharaFilterRow>();
+                if (vc.topRows != null && vc.topRows.Count > 0)
+                {
+                    for (int i = 0; i < vc.topRows.Count; i++)
+                    {
+                        var r = vc.topRows[i];
+                        if (r != null && r.gameObject.activeInHierarchy)
+                            rows.Add(r);
+                    }
+                }
+                else if (vc.contentRoot != null)
+                {
+                    for (int i = 0; i < vc.contentRoot.childCount; i++)
+                    {
+                        var r = vc.contentRoot.GetChild(i)?.GetComponent<
+                            Il2CppYgomGame.Menu.DoubleCharaFilterRow>();
+                        if (r != null && r.gameObject.activeInHierarchy)
+                            rows.Add(r);
+                    }
+                }
+                if (rows.Count == 0) return;
+
+                int flat = 0;
+                var fillerCells = new List<GameObject>();
+                foreach (var row in rows)
+                {
+                    var buttons = row.buttons;
+                    var levels = row.levels;
+                    if (buttons == null) continue;
+
+                    for (int c = 0; c < buttons.Length; c++)
+                    {
+                        var go = buttons[c]?.gameObject;
+                        if (go == null || !go.activeInHierarchy) continue;
+
+                        int itemIdx = _items.FindIndex(it => it.Go == go);
+
+                        if (flat >= cids.Count)
+                        {
+                            if (itemIdx >= 0) fillerCells.Add(go);
+                            continue;
+                        }
+
+                        int cid = cids[flat];
+                        flat++;
+                        if (itemIdx < 0) continue;
+
+                        string name = ResolveCharaName(cid);
+                        if (string.IsNullOrEmpty(name)) continue;
+
+                        string lv = null;
+                        try
+                        {
+                            if (levels != null && c < levels.Length)
+                                lv = levels[c]?.text;
+                        }
+                        catch { }
+
+                        _items[itemIdx].Label = string.IsNullOrWhiteSpace(lv)
+                            ? name : $"{name}, {lv.Trim()}";
+
+                        int targetCid = cid;
+                        var origAction = _items[itemIdx].CustomAction;
+                        _items[itemIdx].CustomAction = () =>
+                        {
+                            if (origAction != null) origAction();
+                            try
+                            {
+                                vc.OnClickIcon(targetCid, Il2CppYgomGame.Menu.DoubleCharaFilterDialogViewController.ScrollTarget.TOP);
+                            }
+                            catch { }
+                        };
+
+                        DebugLogger.Log(LogCategory.Handler, "Dialog",
+                            $"DoubleCharaFilter cell {flat - 1}: cid={cid} -> \"{_items[itemIdx].Label}\"");
+                    }
+                }
+
+                if (fillerCells.Count > 0)
+                    _items.RemoveAll(it => fillerCells.Contains(it.Go));
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[Dialog] ApplyDoubleCharaFilterLabels error: {ex.Message}");
+            }
+        }
+
 
         /// <summary>Resolves a character id to a display name via CharaUtil.</summary>
         private static string ResolveCharaName(int cid)
