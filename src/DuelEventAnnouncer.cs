@@ -321,7 +321,13 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.CardFlipTurn:
-                    AnnounceCardEvent("duel_flipped", param1, param2, param3);
+                    // Engine 3D visual card rotating/flipping animation.
+                    // Parameter p1 is packed locate, p2 is player, and p3 is mode (not uniqueId).
+                    // Position changes are announced by CutinTurn, and flip events are announced by CutinFlip.
+                    // Announcing here caused spurious announcements of unrelated cards (e.g. banished monsters
+                    // whose uniqueId happened to match p3) and interrupted CutinTurn's position change announcement.
+                    DebugLogger.Log(LogCategory.Game, "DuelEvent",
+                        $"CardFlipTurn (suppressed for speech): p1={param1}, p2={param2}, p3={param3}");
                     break;
             }
         }
@@ -724,10 +730,29 @@ namespace DuelLinksAccess
             }
             catch { }
 
-            DebugLogger.Log(LogCategory.Game, "DuelEvent",
-                $"CutinFlip: player={player}, locate={locate}, uid={uid}");
+            string cardName = null;
+            if (uid > 0)
+            {
+                DuelPositionTracker.SetDefense(uid);
+                cardName = TryGetCardName(uid);
+            }
 
-            if (uid > 0) DuelPositionTracker.SetDefense(uid);
+            if (cardName == null)
+            {
+                try
+                {
+                    var snapshot = DuelState.GetFieldCard(player, locate, 0);
+                    if (snapshot.HasValue && !string.IsNullOrEmpty(snapshot.Value.Name))
+                        cardName = snapshot.Value.Name;
+                }
+                catch { }
+            }
+
+            DebugLogger.Log(LogCategory.Game, "DuelEvent",
+                $"CutinFlip: player={player}, locate={locate}, uid={uid}, cardName={cardName}");
+
+            string name = cardName ?? Loc.Get("duel_a_card");
+            Announce(Loc.Get("duel_flipped", name));
         }
 
         /// <summary>

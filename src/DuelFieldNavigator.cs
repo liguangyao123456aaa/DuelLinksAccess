@@ -900,6 +900,53 @@ namespace DuelLinksAccess
         }
 
         /// <summary>Processes zone hotkeys. Returns true if a key was consumed.</summary>
+        
+        private static void DumpStackDiagnostic(int player, int locate, string name)
+        {
+            try
+            {
+                int engNum = -999;
+                try { engNum = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardNum(player, locate); } catch { }
+                int mySeat = DuelState.MyPlayerNum();
+                
+                var field = Il2CppYgomGame.Duel.DuelClient.instance?.worker3d?.goManager?.duelField;
+                var halves = field?.halfFields;
+                var half = (halves != null && player < halves.Count) ? halves[player] : null;
+                var place = locate switch
+                {
+                    14 => half?.extraPlace,
+                    16 => half?.gravePlace,
+                    _ => null
+                };
+                int innerCount = place?.innerCards?.Count ?? -1;
+                int localNum = place?.localCardNum ?? -1;
+                
+                MelonLoader.MelonLogger.Msg($"[STACK_DIAG] {name} (p={player}, mySeat={mySeat}): engNum={engNum}, localNum={localNum}, innerCount={innerCount}");
+
+                for (int s = 0; s < Math.Max(10, Math.Max(engNum, localNum)); s++)
+                {
+                    int uid = -1;
+                    try { uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(player, locate, s); } catch { }
+                    uint cid = 0;
+                    if (uid > 0)
+                    {
+                        try { cid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardIDByUniqueID2(uid); } catch { }
+                    }
+                    if (uid > 0 || cid > 0 || (place?.innerCards != null && s < place.innerCards.Count))
+                    {
+                        var innerCard = (place?.innerCards != null && s < place.innerCards.Count) ? place.innerCards[s] : null;
+                        int innerCid = innerCard?.cardId ?? 0;
+                        if (innerCid == 0) innerCid = innerCard?.cardPlane?.cardModel?.cardId ?? 0;
+                        MelonLoader.MelonLogger.Msg($"[STACK_DIAG]   slot={s}: engineUid={uid}, engineCid={cid}, innerCardId={innerCid}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLoader.MelonLogger.Error($"[STACK_DIAG] Threw: {ex.Message}");
+            }
+        }
+
         private bool ProcessHotkeyInput()
         {
             bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
@@ -927,16 +974,19 @@ namespace DuelLinksAccess
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.G))
             {
+                DumpStackDiagnostic(shift ? 1 : 0, 16, "Graveyard");
                 JumpToZone(shift ? Zone.OppGrave : Zone.MyGrave);
                 return true;
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.B))
             {
+                DumpStackDiagnostic(shift ? 1 : 0, 17, "Banished");
                 JumpToZone(shift ? Zone.OppBanished : Zone.MyBanished);
                 return true;
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.D))
             {
+                DumpStackDiagnostic(shift ? 1 : 0, 14, "ExtraDeck");
                 JumpToZone(shift ? Zone.OppExtra : Zone.MyExtra);
                 return true;
             }
@@ -1085,7 +1135,10 @@ namespace DuelLinksAccess
 
                 var card = snap.Value;
                 uint cardDbId = (uint)card.CardDbId;
-                string cardName = card.Name ?? Loc.Get("duel_unknown_card");
+                string cardName = card.Name;
+                if (string.IsNullOrWhiteSpace(cardName))
+                    cardName = Loc.Get("duel_unknown_card");
+                cardName = cardName.TrimStart('/', ' ');
 
                 bool isHand = _currentZone == Zone.Hand;
                 bool isExtra = _currentZone == Zone.MyExtra || _currentZone == Zone.OppExtra;
@@ -1106,18 +1159,21 @@ namespace DuelLinksAccess
                 if (isEMZ && !isMyCard)
                     cardName = Loc.Get("duel_card_opponent_owned", cardName);
 
+                bool isGrave = _currentZone == Zone.MyGrave || _currentZone == Zone.OppGrave;
+
                 // Determine card kind from Content database — uniform across modes.
                 bool isMonster = true;
-                if (isFieldCard && cardDbId > 0)
+                Il2CppYgomGame.Card.Content.Kind cardKind = Il2CppYgomGame.Card.Content.Kind.Normal;
+                if ((isFieldCard || isGrave || isContentView) && cardDbId > 0 && cardDbId < 100000)
                 {
                     try
                     {
                         var content = Il2CppYgomGame.Card.Content.Instance;
                         if (content != null)
                         {
-                            var kind = content.GetKind((int)cardDbId);
-                            isMonster = kind != Il2CppYgomGame.Card.Content.Kind.Magic
-                                     && kind != Il2CppYgomGame.Card.Content.Kind.Trap;
+                            cardKind = content.GetKind((int)cardDbId);
+                            isMonster = cardKind != Il2CppYgomGame.Card.Content.Kind.Magic
+                                     && cardKind != Il2CppYgomGame.Card.Content.Kind.Trap;
                         }
                     }
                     catch { }
@@ -1126,8 +1182,8 @@ namespace DuelLinksAccess
                 // --- Build announcement parts ---
                 var parts = new List<string>();
 
-                // Face/position info (field + grave; not hand/extra)
-                if (!isContentView)
+                // Face/position info (field only; graveyard has no battle position)
+                if (!isContentView && !isGrave)
                 {
                     bool isFaceUp = card.IsFaceUp;
 
@@ -1158,6 +1214,20 @@ namespace DuelLinksAccess
                         }
                     }
                 }
+                else if (isGrave)
+                {
+                    // Graveyard: announce card category (Magic/Trap) if not monster
+                    if (!isMonster)
+                    {
+                        string kindText = cardKind == Il2CppYgomGame.Card.Content.Kind.Magic ? "魔法卡" : "陷阱卡";
+                        parts.Add(kindText);
+                    }
+                    else
+                    {
+                        string stats = GetHandCardStats(cardDbId);
+                        if (stats != null) parts.Add(stats);
+                    }
+                }
                 else
                 {
                     // Hand / Extra Deck cards: level + ATK/DEF for monsters
@@ -1167,7 +1237,7 @@ namespace DuelLinksAccess
                 }
 
                 string announcement;
-                if (isContentView && cardDbId > 0)
+                if (isContentView && cardDbId > 0 && cardDbId < 100000)
                 {
                     string cardContentText = CardFormatter.FormatCompact((int)cardDbId);
                     announcement = verbose

@@ -32,6 +32,8 @@ namespace DuelLinksAccess
                 bool push = PatchViewControllerManagerPush(harmony);
                 bool pop = PatchViewControllerManagerPop(harmony);
                 bool runEffect = PatchDuelClientRunEffect(harmony);
+                PatchTask3DGraveTop(harmony);
+                PatchTask3DCardMove(harmony);
                 PatchUserTutorialDialog(harmony);
                 PatchTutorialManagerFetch(harmony);
                 PatchTutorialManagerNotificator(harmony);
@@ -122,6 +124,78 @@ namespace DuelLinksAccess
             harmony.Patch(targetMethod, postfix: new HarmonyMethod(postfix));
             DebugLogger.Log(LogCategory.State, "Harmony", "Patched DuelClient.RunEffect");
             return true;
+        }
+
+        private static void PatchTask3DGraveTop(HarmonyLib.Harmony harmony)
+        {
+            try
+            {
+                var targetType = typeof(Il2CppYgomGame.Duel.Task3DGraveTop);
+                MethodInfo targetMethod = null;
+                foreach (var m in targetType.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                {
+                    if (m.Name == "Create" && m.GetParameters().Length == 5)
+                    {
+                        targetMethod = m;
+                        break;
+                    }
+                }
+
+                if (targetMethod == null)
+                {
+                    MelonLogger.Warning("Could not find Task3DGraveTop.Create()");
+                    return;
+                }
+
+                if (IsPatchedByOwner(targetMethod, harmony)) return;
+
+                var postfix = typeof(HarmonyPatches).GetMethod(
+                    nameof(Task3DGraveTop_Create_Postfix),
+                    BindingFlags.Static | BindingFlags.NonPublic);
+
+                harmony.Patch(targetMethod, postfix: new HarmonyMethod(postfix));
+                MelonLogger.Msg("Patched Task3DGraveTop.Create");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"Failed to patch Task3DGraveTop.Create: {ex.Message}");
+            }
+        }
+
+        private static void PatchTask3DCardMove(HarmonyLib.Harmony harmony)
+        {
+            try
+            {
+                var targetType = typeof(Il2CppYgomGame.Duel.Task3DCardMove);
+                MethodInfo targetMethod = null;
+                foreach (var m in targetType.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                {
+                    if (m.Name == "Create" && m.GetParameters().Length == 5)
+                    {
+                        targetMethod = m;
+                        break;
+                    }
+                }
+
+                if (targetMethod == null)
+                {
+                    MelonLogger.Warning("Could not find Task3DCardMove.Create()");
+                    return;
+                }
+
+                if (IsPatchedByOwner(targetMethod, harmony)) return;
+
+                var postfix = typeof(HarmonyPatches).GetMethod(
+                    nameof(Task3DCardMove_Create_Postfix),
+                    BindingFlags.Static | BindingFlags.NonPublic);
+
+                harmony.Patch(targetMethod, postfix: new HarmonyMethod(postfix));
+                MelonLogger.Msg("Patched Task3DCardMove.Create");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"Failed to patch Task3DCardMove.Create: {ex.Message}");
+            }
         }
 
         // Diagnostic patches for the tutorial gate. We don't yet know what
@@ -269,6 +343,94 @@ namespace DuelLinksAccess
             {
                 DebugLogger.Log(LogCategory.Handler, "DuelPatch",
                     $"RunEffect postfix error: {ex.Message}");
+            }
+        }
+
+        private static void Task3DGraveTop_Create_Postfix(Il2CppYgomGame.Duel.Task3D __result)
+        {
+            try
+            {
+                if (__result == null) return;
+                var graveTask = __result.TryCast<Il2CppYgomGame.Duel.Task3DGraveTop>();
+                if (graveTask == null) return;
+
+                int team = graveTask.team;
+                int cardId = graveTask.cardId;
+                if ((team == 0 || team == 1) && cardId > 0 && cardId < 100000)
+                {
+                    DuelState.TrackGraveCard(team, cardId);
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "DuelPatch",
+                    $"Task3DGraveTop_Create_Postfix error: {ex.Message}");
+            }
+        }
+
+        private static void Task3DCardMove_Create_Postfix(Il2CppYgomGame.Duel.Task3D __result)
+        {
+            try
+            {
+                if (__result == null) return;
+                var moveTask = __result.TryCast<Il2CppYgomGame.Duel.Task3DCardMove>();
+                if (moveTask == null) return;
+
+                int cardId = moveTask.cardId;
+                if (cardId <= 0 || cardId >= 100000)
+                {
+                    cardId = moveTask.cardRoot?.cardId ?? 0;
+                    if (cardId <= 0 || cardId >= 100000)
+                    {
+                        cardId = moveTask.cardRoot?.cardPlane?.cardModel?.cardId ?? 0;
+                    }
+                }
+
+                if (cardId <= 0 || cardId >= 100000) return;
+
+                // Check destination: LocateGrave = 16
+                int toPosition = -1;
+                int toTeam = -1;
+                try
+                {
+                    var toPlace = moveTask.toPlace;
+                    if (toPlace != null)
+                    {
+                        toPosition = toPlace.position;
+                        toTeam = toPlace.team;
+                    }
+                }
+                catch { }
+
+                if (toPosition == 16 && (toTeam == 0 || toTeam == 1))
+                {
+                    DuelState.TrackGraveCard(toTeam, cardId);
+                    return;
+                }
+
+                // Check departure: from LocateGrave = 16 (revived, banished from grave, or returned to hand)
+                int fromPosition = -1;
+                int fromTeam = -1;
+                try
+                {
+                    var fromPlace = moveTask.fromPlace;
+                    if (fromPlace != null)
+                    {
+                        fromPosition = fromPlace.position;
+                        fromTeam = fromPlace.team;
+                    }
+                }
+                catch { }
+
+                if (fromPosition == 16 && (fromTeam == 0 || fromTeam == 1))
+                {
+                    DuelState.UntrackGraveCard(fromTeam, cardId);
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "DuelPatch",
+                    $"Task3DCardMove_Create_Postfix error: {ex.Message}");
             }
         }
 

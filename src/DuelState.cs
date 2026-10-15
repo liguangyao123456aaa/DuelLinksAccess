@@ -71,6 +71,39 @@ namespace DuelLinksAccess
         private static readonly int[] _lp = { -1, -1 };
         private static bool _inDuel;
         private static bool _duelEnded;
+        private static bool _isPvPEngineLocked;
+        private static readonly System.Collections.Generic.List<int>[] _trackedGraveCardIds = {
+            new System.Collections.Generic.List<int>(),
+            new System.Collections.Generic.List<int>()
+        };
+
+        public static void TrackGraveCard(int player, int cardDbId)
+        {
+            if (player != 0 && player != 1) return;
+            if (cardDbId <= 0 || cardDbId >= 100000) return;
+            var list = _trackedGraveCardIds[player];
+            // If the card is already at the top (index 0), do not duplicate insert
+            if (list.Count > 0 && list[0] == cardDbId) return;
+
+            // Insert newest at beginning so slot 0 is the top of graveyard
+            list.Insert(0, cardDbId);
+            string name = ResolveCardName(cardDbId) ?? Loc.Get("duel_unknown_card");
+            MelonLoader.MelonLogger.Msg($"[DuelState] TrackGraveCard: p={player} cid={cardDbId} name={name} totalTracked={list.Count}");
+        }
+
+        public static void UntrackGraveCard(int player, int cardDbId)
+        {
+            if (player != 0 && player != 1) return;
+            if (cardDbId <= 0 || cardDbId >= 100000) return;
+            var list = _trackedGraveCardIds[player];
+            bool removed = list.Remove(cardDbId);
+            if (removed)
+            {
+                string name = ResolveCardName(cardDbId) ?? Loc.Get("duel_unknown_card");
+                MelonLoader.MelonLogger.Msg($"[DuelState] UntrackGraveCard: p={player} cid={cardDbId} name={name} totalTracked={list.Count}");
+            }
+        }
+
 
         #endregion
 
@@ -213,99 +246,16 @@ namespace DuelLinksAccess
         /// </summary>
         public static CardSnapshot? GetFieldCard(int player, int locate, int slot)
         {
+            // Stack zones (Extra Deck, Graveyard, Deck) are multi-card zones.
+            // Never let them be short-circuited or contaminated by arbitrary/dummy CardRoots.
+            if (IsStackZone(locate))
+            {
+                return GetStackCard(player, locate, slot);
+            }
+
             var root = FindFieldCardRoot(player, locate, slot);
             if (root == null)
             {
-                // Stack-zone CardRoots may be sparse or indexed out of order.
-                // Resolve through zone-specific sources before engine fallback.
-                if (IsStackZone(locate))
-                {
-                    if (locate == LocateExtra)
-                    {
-                        // 1. Authoritative Engine Query (Single-player / live engine)
-                        if (!IsEngineHollow)
-                        {
-                            int uid = 0;
-                            try { uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(player, locate, slot); }
-                            catch { }
-                            if (uid > 0)
-                            {
-                                var byUid = FindCardRootByUid(uid);
-                                if (byUid != null && byUid.cardId > 0)
-                                    return MakeSnapshot(byUid, isFaceUp: true);
-                                var snap = MakeContentSnapshot(uid);
-                                if (snap.HasValue && snap.Value.CardDbId > 0)
-                                    return snap;
-                            }
-                        }
-
-                        // 2. Registered Deck Array (PvP local player initialization - exact deck contents & order)
-                        var fromDeck = GetRegisteredDeckCard(player, locate, slot);
-                        if (fromDeck.HasValue && fromDeck.Value.CardDbId > 0)
-                            return fromDeck;
-
-                        // 3. Live 3D stack fallback (only if valid card snapshot resolved)
-                        if (TryGetLiveExtraDeckCard(player, slot, out CardSnapshot? liveExtra)
-                            && liveExtra.HasValue && liveExtra.Value.CardDbId > 0)
-                        {
-                            return liveExtra;
-                        }
-
-                        // 4. General engine fallback (in case IsEngineHollow was true but engine still has UID)
-                        int fallbackUid = 0;
-                        try { fallbackUid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(player, locate, slot); }
-                        catch { }
-                        if (fallbackUid > 0)
-                        {
-                            var byUid = FindCardRootByUid(fallbackUid);
-                            if (byUid != null && byUid.cardId > 0)
-                                return MakeSnapshot(byUid, isFaceUp: true);
-                            var snap = MakeContentSnapshot(fallbackUid);
-                            if (snap.HasValue && snap.Value.CardDbId > 0)
-                                return snap;
-                        }
-
-                        return null;
-                    }
-
-                    // Before a live stack is loaded, registered-deck
-                    // data supplies its initial local-player contents. Privacy
-                    // is enforced inside GetRegisteredDeckCard.
-                    var fromDeckNonExtra = GetRegisteredDeckCard(player, locate, slot);
-                    if (fromDeckNonExtra.HasValue) return fromDeckNonExtra;
-
-                    int uidNonExtra = 0;
-                    try { uidNonExtra = Il2CppYgomGame.Duel.Engine
-                        .DLL_DuelGetCardUniqueID(player, locate, slot); }
-                    catch { }
-                    if (uidNonExtra > 0)
-                    {
-                        var byUid = FindCardRootByUid(uidNonExtra);
-                        if (byUid != null) return MakeSnapshot(byUid, isFaceUp: true);
-                        // Engine knows the card but no CardRoot exists — build
-                        // a snapshot from the Content database. Common for Extra
-                        // Deck cards the game hasn't materialized as 3D objects.
-                        return MakeContentSnapshot(uidNonExtra);
-                    }
-
-                    // PvP fallback when the registered-deck array path didn't
-                    // apply (e.g. graveyard, which isn't a registered deck):
-                    // the pile's own DeckCardPlace keeps every stacked
-                    // CardRoot in innerCards even after goManager.cardRoots
-                    // drops them — the grave renders as ONE pooled pile
-                    // object, so the Nth-root walk below sees only the top
-                    // card (2026-07-17 tester log: 6-card PvP grave read as
-                    // top card + Empties).
-                    var innerRoot = GetStackPlaceInnerCard(player, locate, slot);
-                    if (innerRoot != null) return MakeSnapshot(innerRoot, isFaceUp: true);
-
-                    // Last resort: walk cardRoots gathering all matching
-                    // (team, position), order by locator.index for stable
-                    // slot mapping, return the Nth match.
-                    var nthRoot = FindNthStackCardRoot(player, locate, slot);
-                    if (nthRoot != null) return MakeSnapshot(nthRoot, isFaceUp: true);
-                    return null;
-                }
 
                 // Non-stack field zone (monsters 1-3, EMZ 5-6, spells 8-12).
                 // Each locate is single-occupancy, so slot is always 0 and
@@ -406,6 +356,170 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
+        /// Dedicated resolver for multi-card stack zones (Extra Deck, Graveyard, Deck).
+        /// Completely decoupled from single-occupancy field CardRoot scanning.
+        /// </summary>
+        private static CardSnapshot? GetStackCard(int player, int locate, int slot)
+        {
+            if (slot < 0) return null;
+
+            if (locate == LocateExtra)
+            {
+                // 1. Authoritative Engine Query (Single-player / live engine)
+                if (!IsEngineHollow)
+                {
+                    int uid = 0;
+                    try { uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(player, locate, slot); }
+                    catch { }
+                    if (uid > 0)
+                    {
+                        var byUid = FindCardRootByUid(uid);
+                        if (byUid != null && byUid.cardId > 0 && byUid.cardId < 100000)
+                            return MakeSnapshot(byUid, isFaceUp: true);
+                        var snap = MakeContentSnapshot(uid);
+                        if (snap.HasValue && snap.Value.CardDbId > 0 && snap.Value.CardDbId < 100000)
+                            return snap;
+                    }
+                }
+
+                // 2. Registered Deck Array with dynamic diff (Primary for PvP: excludes summoned extra monsters)
+                var fromDeck = GetFilteredRegisteredExtraDeckCard(player, slot);
+                if (fromDeck.HasValue && fromDeck.Value.CardDbId > 0 && fromDeck.Value.CardDbId < 100000)
+                    return fromDeck;
+
+                // 3. Live 3D stack fallback
+                if (TryGetLiveExtraDeckCard(player, slot, out CardSnapshot? liveExtra)
+                    && liveExtra.HasValue && liveExtra.Value.CardDbId > 0 && liveExtra.Value.CardDbId < 100000)
+                {
+                    return liveExtra;
+                }
+
+                // 4. General engine fallback
+                int fallbackUid = 0;
+                try { fallbackUid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(player, locate, slot); }
+                catch { }
+                if (fallbackUid > 0)
+                {
+                    var byUid = FindCardRootByUid(fallbackUid);
+                    if (byUid != null && byUid.cardId > 0 && byUid.cardId < 100000)
+                        return MakeSnapshot(byUid, isFaceUp: true);
+                    var snap = MakeContentSnapshot(fallbackUid);
+                    if (snap.HasValue && snap.Value.CardDbId > 0 && snap.Value.CardDbId < 100000)
+                        return snap;
+                }
+
+                return null;
+            }
+
+            if (locate == LocateGrave)
+            {
+                // 1. Authoritative Engine Query (Single-player)
+                if (!IsEngineHollow)
+                {
+                    int uid = 0;
+                    try { uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(player, locate, slot); }
+                    catch { }
+                    if (uid > 0)
+                    {
+                        var byUid = FindCardRootByUid(uid);
+                        if (byUid != null && byUid.cardId > 0 && byUid.cardId < 100000)
+                            return MakeSnapshot(byUid, isFaceUp: true);
+                        var snap = MakeContentSnapshot(uid);
+                        if (snap.HasValue && snap.Value.CardDbId > 0 && snap.Value.CardDbId < 100000)
+                            return snap;
+                    }
+                }
+
+                // 2. Slot 0 is the top card of graveyard. Check 3D CardRoot first.
+                if (slot == 0)
+                {
+                    var topRoot = FindNthStackCardRoot(player, LocateGrave, 0)
+                               ?? FindFieldCardRoot(player, LocateGrave, 0)
+                               ?? GetStackPlaceInnerCard(player, LocateGrave, 0);
+                    if (topRoot != null)
+                    {
+                        var snap = MakeSnapshot(topRoot, isFaceUp: true);
+                        if (snap.CardDbId > 0 && snap.CardDbId < 100000)
+                        {
+                            // Sync tracked grave in case visual top was generated before event hook
+                            if (player == 0 || player == 1)
+                            {
+                                var list = _trackedGraveCardIds[player];
+                                if (list.Count == 0 || list[0] != snap.CardDbId)
+                                {
+                                    list.Insert(0, snap.CardDbId);
+                                    MelonLoader.MelonLogger.Msg($"[DuelState] Sync top 3D card to grave: p={player} cid={snap.CardDbId} name={snap.Name}");
+                                }
+                            }
+                            return snap;
+                        }
+                    }
+                }
+
+                // 3. For all slots (especially slot >= 1 in PvP), resolve from tracked graveyard cards
+                if (player == 0 || player == 1)
+                {
+                    var graveList = _trackedGraveCardIds[player];
+                    if (graveList != null && slot < graveList.Count)
+                    {
+                        int cid = graveList[slot];
+                        if (cid > 0 && cid < 100000)
+                        {
+                            var snap = BuildContentSnapshot(cid);
+                            if (snap.HasValue && snap.Value.CardDbId > 0)
+                                return snap;
+                        }
+                    }
+                }
+
+                // 4. Try inner cards or Nth root fallback
+                var inner = GetStackPlaceInnerCard(player, locate, slot);
+                if (inner != null)
+                {
+                    var snap = MakeSnapshot(inner, isFaceUp: true);
+                    if (snap.CardDbId > 0 && snap.CardDbId < 100000) return snap;
+                }
+
+                var nth = FindNthStackCardRoot(player, locate, slot);
+                if (nth != null)
+                {
+                    var snap = MakeSnapshot(nth, isFaceUp: true);
+                    if (snap.CardDbId > 0 && snap.CardDbId < 100000) return snap;
+                }
+
+                return null;
+            }
+
+            // Main Deck or other stack zones
+            var fromDeckNonExtra = GetRegisteredDeckCard(player, locate, slot);
+            if (fromDeckNonExtra.HasValue && fromDeckNonExtra.Value.CardDbId > 0 && fromDeckNonExtra.Value.CardDbId < 100000)
+                return fromDeckNonExtra;
+
+            int uidNonExtra = 0;
+            try { uidNonExtra = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(player, locate, slot); }
+            catch { }
+            if (uidNonExtra > 0)
+            {
+                var byUid = FindCardRootByUid(uidNonExtra);
+                if (byUid != null && byUid.cardId > 0 && byUid.cardId < 100000)
+                    return MakeSnapshot(byUid, isFaceUp: true);
+                var snap = MakeContentSnapshot(uidNonExtra);
+                if (snap.HasValue && snap.Value.CardDbId > 0 && snap.Value.CardDbId < 100000)
+                    return snap;
+            }
+
+            var fallbackRoot = GetStackPlaceInnerCard(player, locate, slot)
+                            ?? FindNthStackCardRoot(player, locate, slot);
+            if (fallbackRoot != null)
+            {
+                var snap = MakeSnapshot(fallbackRoot, isFaceUp: true);
+                if (snap.CardDbId > 0 && snap.CardDbId < 100000) return snap;
+            }
+
+            return null;
+        }
+
+        /// <summary>
         /// Returns the hand card at the given slot for the given player, or
         /// null if the slot is empty. "player" is engine/event server seat;
         /// the local player's hand reads through nearHandCard, opponent's
@@ -480,24 +594,36 @@ namespace DuelLinksAccess
                 try
                 {
                     int engineCount = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardNum(player, locate);
-                    if (engineCount >= 0) return engineCount;
+                    // Critical fix: In PvP before hollow lock settles, engine returns 0 for every locate.
+                    // Only return positive count; do not short-circuit a populated stack to 0!
+                    if (engineCount > 0) return engineCount;
                 }
                 catch { }
             }
 
-            if (locate == LocateExtra
-                && TryGetLiveExtraDeckCount(player, out int liveExtraCount)
-                && liveExtraCount > 0)
+            if (locate == LocateExtra)
             {
-                return liveExtraCount;
+                // Dynamic adaptive count: subtracts summoned/consumed monsters & ignores -1 placeholders
+                int filteredCount = GetFilteredRegisteredExtraDeckCount(player);
+                if (filteredCount >= 0) return filteredCount;
+
+                if (TryGetLiveExtraDeckCount(player, out int liveExtraCount) && liveExtraCount > 0)
+                    return liveExtraCount;
             }
 
-            // Registered data is the initialization fallback for the local
-            // Extra Deck and Main Deck before a live stack is available.
-            if (locate == LocateExtra || locate == LocateDeck)
+            if (locate == LocateDeck)
             {
                 int registered = GetRegisteredDeckCount(player, locate);
                 if (registered > 0) return registered;
+            }
+
+            if (locate == LocateGrave)
+            {
+                var place = GetStackPlace(player, LocateGrave);
+                int localNum = place?.localCardNum ?? 0;
+                int trackedNum = _trackedGraveCardIds[player]?.Count ?? 0;
+                int bestGraveCount = Math.Max(localNum, trackedNum);
+                if (bestGraveCount > 0) return bestGraveCount;
             }
 
             int fallbackEngine = 0;
@@ -721,8 +847,11 @@ namespace DuelLinksAccess
                     _inDuel = true;
                     _duelEnded = false;
                     _localSeat = -1; // matchmaking may have assigned a new seat
+                    _isPvPEngineLocked = false;
                     _currentPhase = Il2CppYgomGame.Duel.Engine.Phase.Null;
                     _turnTracker.Reset();
+                    _trackedGraveCardIds[0].Clear();
+                    _trackedGraveCardIds[1].Clear();
                     // Don't reset _lp — LifeSet fires BEFORE DuelStart with
                     // the starting values, and we want to keep them.
                     break;
@@ -768,10 +897,13 @@ namespace DuelLinksAccess
             _inDuel = false;
             _duelEnded = false;
             _localSeat = -1;
+            _isPvPEngineLocked = false;
             _currentPhase = Il2CppYgomGame.Duel.Engine.Phase.Null;
             _turnTracker.Reset();
             _lp[0] = -1;
             _lp[1] = -1;
+            _trackedGraveCardIds[0].Clear();
+            _trackedGraveCardIds[1].Clear();
         }
 
         #endregion
@@ -915,37 +1047,26 @@ namespace DuelLinksAccess
 
                 if (slot >= indices.Count) return null;
 
-                // Pick the Nth match ordered by locator.index. Iterate
-                // matchCount times, each pass selecting the smallest index
-                // greater than what we've already chosen. O(n*k) where k is
-                // matchCount, fine for tiny n.
-                int chosenIndex = int.MinValue;
-                Il2CppYgomGame.Duel.CardRoot chosenRoot = null;
-                for (int pick = 0; pick <= slot; pick++)
+                // Robust Nth match: collect all unique CardRoots for this (player, locate)
+                // In Unity 3D field, stacked cards in graveyard/banished often share locator.index == 0.
+                // Strict index-greater-than check fails on slot >= 1! Here we gather distinct roots.
+                var matchingList = new System.Collections.Generic.List<Il2CppYgomGame.Duel.CardRoot>();
+                for (int i = 0; i < roots.Count; i++)
                 {
-                    int bestIdx = int.MaxValue;
-                    Il2CppYgomGame.Duel.CardRoot bestRoot = null;
-                    for (int i = 0; i < roots.Count; i++)
+                    var root = roots[i];
+                    var locator = root?.toLocator;
+                    var place = locator?.cardPlace;
+                    if (place != null && place.team == player && place.position == locate)
                     {
-                        var root = roots[i];
-                        var locator = root?.toLocator;
-                        var place = locator?.cardPlace;
-                        if (place == null) continue;
-                        if (place.team != player || place.position != locate) continue;
-
-                        int idx = locator.index;
-                        if (idx <= chosenIndex) continue; // already picked
-                        if (idx < bestIdx)
-                        {
-                            bestIdx = idx;
-                            bestRoot = root;
-                        }
+                        if (!matchingList.Contains(root))
+                            matchingList.Add(root);
                     }
-                    if (bestRoot == null) return null;
-                    chosenIndex = bestIdx;
-                    chosenRoot = bestRoot;
                 }
-                return chosenRoot;
+
+                if (slot >= 0 && slot < matchingList.Count)
+                    return matchingList[slot];
+
+                return null;
             }
             catch (Exception ex)
             {
@@ -1022,16 +1143,30 @@ namespace DuelLinksAccess
             {
                 var init = Il2CppYgomGame.Duel.DuelClient.GetEngineInitializer();
                 if (init == null) return null;
-                // Privacy gate — only ever serve the local player's deck.
-                if (player != init.myPlayerNum) return null;
+
+                int localSeat = MyPlayerNum();
+                // Privacy gate: allow reading local player's deck even if init.myPlayerNum lags or mismatches
+                if (player != localSeat && player != init.myPlayerNum) return null;
+
                 var deck = player switch
                 {
                     0 => init.deck0,
                     1 => init.deck1,
                     _ => null
                 };
-                if (deck == null || deck.Length <= deckType) return null;
-                return deck[deckType];
+                if (deck != null && deck.Length > deckType && deck[deckType] != null && deck[deckType].Length > 0)
+                {
+                    return deck[deckType];
+                }
+
+                // Fallback: in some PvP rooms, client mounts local deck on deck0 regardless of seat
+                var altDeck = player == 0 ? init.deck1 : init.deck0;
+                if (altDeck != null && altDeck.Length > deckType && altDeck[deckType] != null && altDeck[deckType].Length > 0)
+                {
+                    return altDeck[deckType];
+                }
+
+                return null;
             }
             catch { return null; }
         }
@@ -1043,6 +1178,97 @@ namespace DuelLinksAccess
         /// where the visual layer doesn't materialize all cards and the
         /// engine's DLL_Duel queries are hollow.
         /// </summary>
+
+
+        /// <summary>
+        /// Real-time count of cards remaining in the Extra Deck.
+        /// Filters out invalid placeholders (-1) and subtracts extra monsters
+        /// already present on field, in graveyard, or banished.
+        /// </summary>
+        public static int GetFilteredRegisteredExtraDeckCount(int player)
+        {
+            if (player != 0 && player != 1) return 0;
+            var inner = GetRegisteredDeckArray(player, 1);
+            if (inner == null || inner.Length == 0) return 0;
+
+            var remaining = GetRemainingExtraDeckIds(player, inner);
+            return remaining.Count;
+        }
+
+        private static System.Collections.Generic.List<int> GetRemainingExtraDeckIds(
+            int player, Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<int> inner)
+        {
+            var consumedIds = new System.Collections.Generic.List<int>();
+            try
+            {
+                var roots = Il2CppYgomGame.Duel.DuelClient.instance?.worker3d?.goManager?.cardRoots;
+                if (roots != null)
+                {
+                    for (int i = 0; i < roots.Count; i++)
+                    {
+                        var root = roots[i];
+                        var place = root?.toLocator?.cardPlace;
+                        if (place != null && place.team == player && place.position != LocateExtra && place.position != LocateDeck)
+                        {
+                            int cid = root.cardId;
+                            if (cid == 0) cid = root.cardPlane?.cardModel?.cardId ?? 0;
+                            if (cid > 0 && cid < 100000) consumedIds.Add(cid);
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // Also check tracked graveyard cards
+            try
+            {
+                var grave = _trackedGraveCardIds[player];
+                if (grave != null)
+                {
+                    for (int i = 0; i < grave.Count; i++)
+                    {
+                        int gcid = grave[i];
+                        if (gcid > 0 && gcid < 100000 && !consumedIds.Contains(gcid))
+                            consumedIds.Add(gcid);
+                    }
+                }
+            }
+            catch { }
+
+            var remaining = new System.Collections.Generic.List<int>();
+            for (int i = 0; i < inner.Length; i++)
+            {
+                int id = inner[i];
+                // Filter out unassigned/empty extra deck slots (-1 / invalid IDs)
+                if (id <= 0 || id >= 100000) continue;
+
+                if (consumedIds.Contains(id))
+                {
+                    consumedIds.Remove(id); // consume one summoned/sent instance
+                }
+                else
+                {
+                    remaining.Add(id);
+                }
+            }
+            return remaining;
+        }
+
+        private static CardSnapshot? GetFilteredRegisteredExtraDeckCard(int player, int slot)
+        {
+            if (slot < 0) return null;
+            var inner = GetRegisteredDeckArray(player, 1);
+            if (inner == null || inner.Length == 0) return null;
+
+            var remaining = GetRemainingExtraDeckIds(player, inner);
+            if (slot < remaining.Count)
+            {
+                return BuildContentSnapshot(remaining[slot]);
+            }
+
+            return null;
+        }
+
         private static CardSnapshot? GetRegisteredDeckCard(int player, int locate, int slot)
         {
             if (slot < 0) return null;
@@ -1103,8 +1329,9 @@ namespace DuelLinksAccess
             // opponent's set monsters / face-down spells if the client
             // happens to know them (e.g., AI duels where the engine has full
             // visibility).
-            if (cardId == 0)
+            if (cardId <= 0 || cardId >= 100000)
             {
+                cardId = 0;
                 bool localOwned = false;
                 try
                 {
@@ -1118,11 +1345,14 @@ namespace DuelLinksAccess
                     try
                     {
                         var model = root.cardPlane?.cardModel;
-                        if (model != null) cardId = model.cardId;
+                        if (model != null && model.cardId > 0 && model.cardId < 100000)
+                            cardId = model.cardId;
                     }
                     catch { }
                 }
             }
+
+            if (cardId < 0 || cardId >= 100000) cardId = 0;
 
             return new CardSnapshot(uniqueId, cardId, ResolveCardName(cardId),
                 atk, def, level, isAttack, isFaceUp);
@@ -1138,6 +1368,7 @@ namespace DuelLinksAccess
         {
             get
             {
+                if (_isPvPEngineLocked) return true;
                 try
                 {
                     int my = MyPlayerNum();
@@ -1149,7 +1380,27 @@ namespace DuelLinksAccess
 
                     var hand = GetHandCardsFor(my);
                     int visualHand = hand?.m_InfoList?.Count ?? 0;
-                    return visualHand > 0;
+                    if (visualHand > 0)
+                    {
+                        _isPvPEngineLocked = true;
+                        return true;
+                    }
+
+                    // Fallback detection when hand is empty (used up in combo):
+                    // In PvP, engine returns 0 for monster/spell zones even when cards are on field
+                    var roots = Il2CppYgomGame.Duel.DuelClient.instance?.worker3d?.goManager?.cardRoots;
+                    if (roots != null && roots.Count > 0)
+                    {
+                        int engineMonster = -1;
+                        try { engineMonster = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardNum(my, 2); } catch { }
+                        if (engineMonster == 0)
+                        {
+                            _isPvPEngineLocked = true;
+                            return true;
+                        }
+                    }
+
+                    return false;
                 }
                 catch { return false; }
             }

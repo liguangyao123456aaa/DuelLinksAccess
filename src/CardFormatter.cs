@@ -17,12 +17,17 @@ namespace DuelLinksAccess
         /// </summary>
         public static string FormatCompact(int mrk)
         {
+            if (mrk <= 0 || mrk >= 100000) return Loc.Get("duel_unknown_card");
+
             try
             {
                 var content = Content.Instance;
                 if (content == null) return GetName(mrk);
 
-                string name = content.GetName(mrk) ?? Loc.Get("duel_unknown_card");
+                string name = content.GetName(mrk);
+                if (string.IsNullOrWhiteSpace(name))
+                    name = Loc.Get("duel_unknown_card");
+
                 var kind = content.GetKind(mrk);
 
                 if (IsMonsterKind(kind))
@@ -35,29 +40,44 @@ namespace DuelLinksAccess
                     int atk = content.GetAtk(mrk);
                     int def = content.GetDef2(mrk);
 
-                    string attrText = content.GetAttributeText(attr);
-                    string typeText = content.GetTypeText(type);
-                    string kindText = content.GetKindText(kind);
+                    string attrText = content.GetAttributeText(attr)?.Trim();
+                    string typeText = content.GetTypeText(type)?.Trim();
+                    string kindText = content.GetKindText(kind)?.Trim();
+                    if (!string.IsNullOrEmpty(kindText))
+                        kindText = kindText.TrimStart('/', ' ');
+
+                    var metaParts = new List<string>();
+                    if (!string.IsNullOrEmpty(attrText)) metaParts.Add(attrText);
+                    if (!string.IsNullOrEmpty(typeText)) metaParts.Add(typeText);
+                    if (!string.IsNullOrEmpty(kindText)) metaParts.Add(kindText);
+                    string meta = string.Join(" ", metaParts);
+
                     string progression = CardProgressionFormatter.Format(
                         level, rank, link);
                     string combatStats = CardProgressionFormatter
                         .FormatCombatStats(atk, def, link);
 
-                    return $"{name}, {attrText} {typeText} {kindText}, "
-                        + $"{progression}, {combatStats}";
+                    var resParts = new List<string> { name };
+                    if (!string.IsNullOrEmpty(meta)) resParts.Add(meta);
+                    if (!string.IsNullOrEmpty(progression)) resParts.Add(progression);
+                    if (!string.IsNullOrEmpty(combatStats)) resParts.Add(combatStats);
+
+                    return string.Join(", ", resParts);
                 }
                 else
                 {
                     var icon = content.GetIcon(mrk);
-                    string kindText = content.GetKindText(kind);
+                    string kindText = content.GetKindText(kind)?.Trim();
+                    if (!string.IsNullOrEmpty(kindText))
+                        kindText = kindText.TrimStart('/', ' ');
 
                     if (icon != Content.Icon.Null)
                     {
-                        string iconText = content.GetIconText(icon);
-                        return $"{name}, {iconText} {kindText}";
+                        string iconText = content.GetIconText(icon)?.Trim();
+                        return $"{name}, {iconText} {kindText}".TrimEnd(' ', ',');
                     }
 
-                    return $"{name}, {kindText}";
+                    return $"{name}, {kindText}".TrimEnd(' ', ',');
                 }
             }
             catch (Exception ex)
@@ -73,6 +93,8 @@ namespace DuelLinksAccess
         /// </summary>
         public static string FormatVerbose(int mrk)
         {
+            if (mrk <= 0 || mrk >= 100000) return Loc.Get("duel_unknown_card");
+
             string compact = FormatCompact(mrk);
 
             try
@@ -98,9 +120,12 @@ namespace DuelLinksAccess
         /// </summary>
         public static string GetName(int mrk)
         {
+            if (mrk <= 0 || mrk >= 100000) return Loc.Get("duel_unknown_card");
+
             try
             {
-                return Content.Instance?.GetName(mrk) ?? Loc.Get("duel_unknown_card");
+                string name = Content.Instance?.GetName(mrk);
+                return string.IsNullOrWhiteSpace(name) ? Loc.Get("duel_unknown_card") : name;
             }
             catch
             {
